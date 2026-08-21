@@ -2841,7 +2841,7 @@ mod tests {
                 request_timeout_ms: 1_000,
                 eligibility_request_timeout_ms: 1_000,
                 max_attempts: 3,
-                retry_interval_ms: 250,
+                retry_interval_ms: 50,
                 calldata_max_attempts: 40,
             },
             scheduling: crate::config::SchedulingConfig {

@@ -255,7 +255,7 @@ impl LoadedConfig {
                     5_000,
                 )?,
                 max_attempts: take_u32_default(&mut values, "OPENSEA_MAX_ATTEMPTS", 3)?,
-                retry_interval_ms: take_u64_default(&mut values, "OPENSEA_RETRY_INTERVAL_MS", 250)?,
+                retry_interval_ms: take_u64_default(&mut values, "OPENSEA_RETRY_INTERVAL_MS", 50)?,
                 calldata_max_attempts: take_u32_default(
                     &mut values,
                     "OPENSEA_CALLDATA_MAX_ATTEMPTS",
@@ -276,7 +276,7 @@ impl LoadedConfig {
                     "PENDING_TIMEOUT_SECONDS",
                     20,
                 )?,
-                base_delay_ms: take_u64_default(&mut values, "RECEIPT_POLL_BASE_DELAY_MS", 250)?,
+                base_delay_ms: take_u64_default(&mut values, "RECEIPT_POLL_BASE_DELAY_MS", 50)?,
                 max_delay_ms: take_u64_default(&mut values, "RECEIPT_POLL_MAX_DELAY_MS", 2_000)?,
             },
             fees,
@@ -922,13 +922,13 @@ mod tests {
         assert_eq!(loaded.app.scheduling.refresh_interval_seconds, 600);
         assert_eq!(loaded.app.retry.max_attempts, 3);
         assert_eq!(loaded.app.retry.pending_timeout_seconds, 20);
-        assert_eq!(loaded.app.retry.base_delay_ms, 250);
+        assert_eq!(loaded.app.retry.base_delay_ms, 50);
         assert_eq!(loaded.app.retry.max_delay_ms, 2_000);
         assert_eq!(loaded.app.fees.replacement_bump_bps, 11_250);
         assert_eq!(loaded.app.opensea.request_timeout_ms, 10_000);
         assert_eq!(loaded.app.opensea.eligibility_request_timeout_ms, 5_000);
         assert_eq!(loaded.app.opensea.max_attempts, 3);
-        assert_eq!(loaded.app.opensea.retry_interval_ms, 250);
+        assert_eq!(loaded.app.opensea.retry_interval_ms, 50);
         assert_eq!(loaded.app.opensea.calldata_max_attempts, 40);
     }
 
@@ -962,7 +962,7 @@ mod tests {
             .expect("default OpenSea retry policy");
 
         assert_eq!(loaded.app.opensea.max_attempts, 3);
-        assert_eq!(loaded.app.opensea.retry_interval_ms, 250);
+        assert_eq!(loaded.app.opensea.retry_interval_ms, 50);
         assert_eq!(loaded.app.opensea.calldata_max_attempts, 40);
 
         for (name, value) in [

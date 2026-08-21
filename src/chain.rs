@@ -1008,7 +1008,7 @@ mod tests {
         let retry = RetryConfig {
             max_attempts: 3,
             pending_timeout_seconds: 20,
-            base_delay_ms: 250,
+            base_delay_ms: 50,
             max_delay_ms: 2_000,
         };
 
@@ -1016,7 +1016,7 @@ mod tests {
             ReceiptPollingPolicy::from(retry),
             ReceiptPollingPolicy {
                 timeout_seconds: 20,
-                initial_delay_ms: 250,
+                initial_delay_ms: 50,
                 maximum_delay_ms: 2_000,
             }
         );
