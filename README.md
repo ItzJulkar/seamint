@@ -43,6 +43,7 @@ seamint calldata --collection SLUG --wallets FILE [--token-id N]
                             Fetch + validate mint calldata without signing (dry run)
 seamint wallets create --count N --quantity Q --output FILE
                             Generate a fresh wallet manifest (offline)
+seamint eth mainnet gas-fee   Set Ethereum mainnet gas fee level (1=slow, 2=medium, 3=fast)
 ```
 
 `seamint doctor` is the first thing you run after configuring — it checks the
@@ -83,6 +84,7 @@ A single `.env` drives everything. The important knobs:
 | `SPONSORED_EXECUTOR_ADDRESS` | — | Per-sponsor deterministic executor address (from `deploy-executor`), identical across supported chains. |
 | `SPONSORED_OPERATION_DEADLINE_SECONDS` | `120` | Wallet mint-signature validity window (`30-3600`). |
 | `FEE_AUTOMATIC` | `true` | Auto-estimate EIP-1559 fees; set `false` for manual `MAX_FEE_PER_GAS_GWEI` / `MAX_PRIORITY_FEE_PER_GAS_GWEI`. |
+| `GAS_FEE_LEVEL` | chain default | Optional gas aggressiveness level (`slow`/`medium`/`fast`). When unset: fast on Robinhood/Ink, slow on Ethereum mainnet, medium elsewhere. On Ethereum it maps to the real Etherscan gas-tracker value; on cheap chains the RPC's real estimate. Set via `seamint eth mainnet gas-fee`. |
 | `MAX_FEE_PER_GAS_GWEI` | — | Manual max fee per gas in gwei (`FEE_AUTOMATIC=false`). |
 | `MAX_PRIORITY_FEE_PER_GAS_GWEI` | — | Manual priority fee per gas in gwei (`FEE_AUTOMATIC=false`). |
 | `GAS_LIMIT` | `300000` | Mint transaction gas limit. |

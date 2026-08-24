@@ -423,6 +423,29 @@ fn prompt(label: &str) -> Result<String, TerminalError> {
     Ok(input.trim().to_owned())
 }
 
+/// Prompt the user to choose an Ethereum mainnet gas fee level.
+///
+/// The three choices map to the real Etherscan gas-tracker tiers (slow =
+/// SafeGasPrice, medium = ProposeGasPrice, fast = FastGasPrice). Cancelling
+/// with `q` returns `TerminalError::Cancelled`.
+pub fn prompt_gas_fee_level() -> Result<crate::domain::GasFeeLevel, TerminalError> {
+    logging::section_break();
+    logging::info("Ethereum mainnet gas fee level (real Etherscan gas-tracker values):");
+    logging::input("1 = slow, 2 = medium, 3 = fast");
+    loop {
+        let input = prompt("Gas fee level [1-3]: ")?;
+        if input.eq_ignore_ascii_case("q") {
+            return Err(TerminalError::Cancelled);
+        }
+        match input.trim() {
+            "1" => return Ok(crate::domain::GasFeeLevel::Slow),
+            "2" => return Ok(crate::domain::GasFeeLevel::Medium),
+            "3" => return Ok(crate::domain::GasFeeLevel::Fast),
+            _ => logging::warn("Enter 1, 2, or 3."),
+        }
+    }
+}
+
 fn format_token_range(range: Option<(u64, u64)>) -> impl fmt::Display {
     range.map_or_else(
         || "ERC-721".to_owned(),

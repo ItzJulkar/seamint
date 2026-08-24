@@ -9,6 +9,7 @@ use thiserror::Error;
 use url::Url;
 use zeroize::Zeroizing;
 
+use crate::domain::GasFeeLevel;
 use crate::signing::WalletSigner;
 use crate::sponsored::sponsored_wallet_gas_limit;
 
@@ -25,6 +26,7 @@ const KNOWN_SETTINGS: &[&str] = &[
     "SPONSORED_OPERATION_DEADLINE_SECONDS",
     "RPC_URL",
     "FEE_AUTOMATIC",
+    "GAS_FEE_LEVEL",
     "MAX_FEE_PER_GAS_GWEI",
     "MAX_PRIORITY_FEE_PER_GAS_GWEI",
     "REPLACEMENT_BUMP_BPS",
@@ -116,6 +118,9 @@ pub struct RetryConfig {
 pub struct FeesConfig {
     pub mode: FeeMode,
     pub replacement_bump_bps: u32,
+    /// Optional gas aggressiveness level. When unset, the chain's default is
+    /// used (fast on Robinhood/Ink, slow on Ethereum mainnet, medium elsewhere).
+    pub gas_fee_level: Option<GasFeeLevel>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,6 +409,13 @@ fn environment_search_start(current: &Path, executable: &Path) -> PathBuf {
 fn parse_fees(values: &mut BTreeMap<String, String>) -> Result<FeesConfig, ConfigError> {
     let is_automatic = parse_bool(&take_required(values, "FEE_AUTOMATIC")?, "FEE_AUTOMATIC")?;
     let replacement_bump_bps = take_u32_default(values, "REPLACEMENT_BUMP_BPS", 11_250)?;
+    let gas_fee_level = values
+        .remove("GAS_FEE_LEVEL")
+        .map(|value| {
+            GasFeeLevel::parse(&value)
+                .ok_or_else(|| invalid("GAS_FEE_LEVEL", "must be slow, medium, or fast"))
+        })
+        .transpose()?;
     let mode = if is_automatic {
         if values.contains_key("MAX_FEE_PER_GAS_GWEI")
             || values.contains_key("MAX_PRIORITY_FEE_PER_GAS_GWEI")
@@ -429,6 +441,7 @@ fn parse_fees(values: &mut BTreeMap<String, String>) -> Result<FeesConfig, Confi
     Ok(FeesConfig {
         mode,
         replacement_bump_bps,
+        gas_fee_level,
     })
 }
 

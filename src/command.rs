@@ -103,6 +103,26 @@ pub enum Command {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    /// Configure a supported network's settings (currently Ethereum mainnet).
+    Eth {
+        #[command(subcommand)]
+        command: EthCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EthCommand {
+    /// Configure Ethereum mainnet settings.
+    Mainnet {
+        #[command(subcommand)]
+        command: MainnetCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MainnetCommand {
+    /// Set the Ethereum mainnet gas fee level (1=slow, 2=medium, 3=fast).
+    GasFee,
 }
 
 #[derive(Debug, Subcommand)]
@@ -233,6 +253,11 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
     let command = match cli.command {
         Command::Wallets { command } => return create_wallets(command),
         Command::DeployExecutor => return deploy_executor().await,
+        Command::Eth {
+            command: EthCommand::Mainnet {
+                command: MainnetCommand::GasFee,
+            },
+        } => return set_eth_mainnet_gas_fee().await,
         command => command,
     };
     let loaded = LoadedConfig::load()?;
@@ -287,6 +312,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
                 unreachable!("handled before configuration loading")
             }
             Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
+            Command::Eth { .. } => unreachable!("handled before configuration loading"),
         };
     }
     if let Command::Mint {
@@ -319,6 +345,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
             unreachable!("handled before configuration loading")
         }
         Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
+        Command::Eth { .. } => unreachable!("handled before configuration loading"),
     }
 }
 
@@ -339,6 +366,48 @@ fn create_wallets(command: WalletCommand) -> Result<(), CommandError> {
         logging::info(format!("Wallet {}: {address}", index + 1));
     }
     logging::warn("This file contains private keys. Keep it private and never commit or share it.");
+    Ok(())
+}
+
+/// Set the Ethereum mainnet gas fee level (`GAS_FEE_LEVEL` in `.env`).
+async fn set_eth_mainnet_gas_fee() -> Result<(), CommandError> {
+    let loaded = LoadedConfig::load()?;
+    let path = loaded.source_path().to_path_buf();
+    let level = terminal::prompt_gas_fee_level()?;
+    upsert_env_setting(&path, "GAS_FEE_LEVEL", level.label())?;
+    logging::success(format!(
+        "GAS_FEE_LEVEL set to {} in {}.",
+        level.label(),
+        path.display()
+    ));
+    logging::info("On Ethereum mainnet this maps to the real Etherscan gas-tracker value for that tier.");
+    Ok(())
+}
+
+/// Insert or replace a single `KEY=value` line in a `.env` file, preserving all
+/// other lines and comments. Returns an error if the file cannot be read or
+/// written.
+fn upsert_env_setting(path: &std::path::Path, key: &str, value: &str) -> Result<(), CommandError> {
+    let contents = std::fs::read_to_string(path).map_err(CommandError::SubmissionOutput)?;
+    let had_crlf = contents.contains("\r\n");
+    let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
+    let mut replaced = false;
+    for line in lines.iter_mut() {
+        if let Some((k, _)) = line.split_once('=') {
+            if k.trim() == key {
+                *line = format!("{key}={value}");
+                replaced = true;
+                break;
+            }
+        }
+    }
+    if !replaced {
+        lines.push(format!("{key}={value}"));
+    }
+    let separator = if had_crlf { "\r\n" } else { "\n" };
+    let mut output = lines.join(separator);
+    output.push_str(separator);
+    std::fs::write(path, output).map_err(CommandError::SubmissionOutput)?;
     Ok(())
 }
 
@@ -567,6 +636,7 @@ async fn load_deployment_network(config: &AppConfig) -> Result<DeploymentNetwork
         gateway.probe_rpc(&config.rpc_url),
     )
     .await?;
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     Ok(DeploymentNetwork {
         gateway,
         chain: derived_chain(config, probe.chain_id),
@@ -805,6 +875,7 @@ async fn multi_wallet_doctor(
     )
     .await?;
     let chain = derived_chain(config, probe.chain_id);
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
 
     match &multi_wallet.mode {
         MultiWalletMode::SelfFunded => {
@@ -871,6 +942,7 @@ async fn doctor(
     )
     .await?;
     let chain = derived_chain(config, probe.chain_id);
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     let _inputs = logging::animate(
         "Preparing RPC submission data",
         gateway.submission_inputs(&chain, probe.rpc_index, signer.identity().address),
@@ -889,6 +961,7 @@ async fn mint(config: &AppConfig, signer: &WalletSigner) -> Result<(), CommandEr
     let gateway = ChainGateway::new(Duration::from_millis(config.opensea.request_timeout_ms))?;
     let probe = logging::animate("Connecting to RPC", gateway.probe_rpc(&config.rpc_url)).await?;
     let chain = derived_chain(config, probe.chain_id);
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     logging::success(format!("RPC connected: chain_id={}", chain.chain_id));
     let mut client = WalletOpenSeaClient::new(&config.opensea)?;
     let metadata = logging::animate(
@@ -2733,7 +2806,7 @@ mod tests {
                 300_000,
                 mint_value,
                 estimate,
-                U256::from(3_901_000_u64),
+                U256::from(3_001_000_u64),
             )
             .is_ok()
         );
@@ -2743,7 +2816,7 @@ mod tests {
                 300_000,
                 mint_value,
                 estimate,
-                U256::from(3_900_999_u64),
+                U256::from(3_000_999_u64),
             ),
             Err(CommandError::WalletUnderfunded { shortfall_wei })
                 if shortfall_wei == U256::from(1_u8)
@@ -2856,6 +2929,7 @@ mod tests {
             fees: crate::config::FeesConfig {
                 mode,
                 replacement_bump_bps: 11_250,
+                gas_fee_level: None,
             },
             rpc_url: "https://rpc.example.invalid".parse().expect("URL"),
             gas_limit: 300_000,

@@ -7,6 +7,7 @@ pub mod domain;
 pub mod executor_deployment;
 mod fee;
 pub mod funds;
+pub mod gas_oracle;
 pub mod logging;
 pub mod multi_mint;
 pub mod multi_wallet;

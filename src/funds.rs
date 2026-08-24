@@ -918,6 +918,7 @@ async fn connect(
 ) -> Result<(ChainGateway, ChainConfig, usize), NativeFundsError> {
     let gateway = ChainGateway::new(Duration::from_millis(config.opensea.request_timeout_ms))?;
     let probe = rpc_read_retry(config, || gateway.probe_rpc(&config.rpc_url)).await?;
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     let chain = ChainConfig {
         chain_id: probe.chain_id,
         rpc_urls: vec![config.rpc_url.clone()],
@@ -1437,6 +1438,7 @@ mod tests {
             fees: FeesConfig {
                 mode: crate::config::FeeMode::Automatic,
                 replacement_bump_bps: 11_250,
+                gas_fee_level: None,
             },
             rpc_url: "https://rpc.example.invalid".parse().expect("RPC URL"),
             gas_limit: 300_000,

@@ -219,6 +219,7 @@ pub async fn run(
     let locator = parse_collection_locator(&locator_text)?;
     let gateway = ChainGateway::new(Duration::from_millis(config.opensea.request_timeout_ms))?;
     let probe = logging::animate("Connecting to RPC", gateway.probe_rpc(&config.rpc_url)).await?;
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     let chain = ChainConfig {
         chain_id: probe.chain_id,
         rpc_urls: vec![config.rpc_url.clone()],
@@ -569,6 +570,7 @@ pub async fn inspect_calldata(
     let locator = parse_collection_locator(locator_text)?;
     let gateway = ChainGateway::new(Duration::from_millis(config.opensea.request_timeout_ms))?;
     let probe = logging::animate("Connecting to RPC", gateway.probe_rpc(&config.rpc_url)).await?;
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     let chain = ChainConfig {
         chain_id: probe.chain_id,
         rpc_urls: vec![config.rpc_url.clone()],
@@ -2168,6 +2170,7 @@ pub async fn undelegate(
     let manifest = WalletManifest::load(&multi.manifest_path)?;
     let gateway = ChainGateway::new(Duration::from_millis(config.opensea.request_timeout_ms))?;
     let probe = gateway.probe_rpc(&config.rpc_url).await?;
+    crate::gas_oracle::initialize_gas_fee_state(probe.chain_id).await;
     let chain = ChainConfig {
         chain_id: probe.chain_id,
         rpc_urls: vec![config.rpc_url.clone()],

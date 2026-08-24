@@ -3,6 +3,46 @@ use thiserror::Error;
 
 const BASIS_POINTS: u32 = 10_000;
 
+/// Gas fee aggressiveness level. The actual fee values are real per-chain
+/// values fetched at runtime (Etherscan gas tracker for Ethereum, the RPC's
+/// own fee estimate for cheap chains) — never an invented multiplier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GasFeeLevel {
+    Slow,
+    Medium,
+    Fast,
+}
+
+impl GasFeeLevel {
+    /// Chain-specific default level. Fast on the chains the user races drops
+    /// on (Robinhood, Ink), slow on Ethereum mainnet where gas is expensive,
+    /// medium everywhere else.
+    pub fn default_for_chain(chain_id: u64) -> Self {
+        match chain_id {
+            4663 | 57073 => GasFeeLevel::Fast,
+            1 => GasFeeLevel::Slow,
+            _ => GasFeeLevel::Medium,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "slow" => Some(GasFeeLevel::Slow),
+            "medium" => Some(GasFeeLevel::Medium),
+            "fast" => Some(GasFeeLevel::Fast),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GasFeeLevel::Slow => "slow",
+            GasFeeLevel::Medium => "medium",
+            GasFeeLevel::Fast => "fast",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Eip1559Fees {
     pub max_fee_per_gas: U256,
