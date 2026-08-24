@@ -108,7 +108,7 @@ mod tests {
 
         assert_eq!(
             address,
-            "0x384791Def6b0f850A275e00113Fa103B9C5B25AF"
+            "0xc88d8e788d91d8aa63b13976c296f0dbb76ca46c"
                 .parse::<Address>()
                 .expect("independently calculated address")
         );

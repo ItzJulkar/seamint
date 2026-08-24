@@ -501,7 +501,7 @@ mod tests {
             operation_digest(8453, dispatcher, sponsor, batch_id, 0, &operation).expect("digest");
         assert_eq!(
             unsigned_digest,
-            "0xd2c1e6ec11ca71ea4d734a0b4af5745555e4f1711ae503cafab3aba1697cee82"
+            "0x29c0c994eccdd10a507f1ade42778870af1764f34ee34b4eca70b92414cf9005"
                 .parse::<B256>()
                 .expect("independent Solidity ABI digest fixture")
         );

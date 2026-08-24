@@ -852,7 +852,7 @@ mod tests {
             ("PENDING_TIMEOUT_SECONDS", &["`20`", "`1-86400`"][..]),
             (
                 "RECEIPT_POLL_BASE_DELAY_MS",
-                &["`250`", "`50-60000`"] as &[&str],
+                &["`50`", "`50-60000`"] as &[&str],
             ),
             (
                 "RECEIPT_POLL_MAX_DELAY_MS",
@@ -874,7 +874,7 @@ mod tests {
             ("OPENSEA_MAX_ATTEMPTS", &["`3`", "`1-10`"][..]),
             (
                 "OPENSEA_RETRY_INTERVAL_MS",
-                &["`250`", "`50-30000`"] as &[&str],
+                &["`50`", "`50-30000`"] as &[&str],
             ),
             (
                 "OPENSEA_CALLDATA_MAX_ATTEMPTS",

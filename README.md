@@ -80,15 +80,23 @@ A single `.env` drives everything. The important knobs:
 | `SPONSORED` | — | `true` = sponsored EIP-7702 mode, `false` = self-funded concurrent. |
 | `RECIPIENT_ADDRESS` | — | Where minted NFTs go in multi-wallet mode. Must differ from the executor. |
 | `SPONSOR_KEY` | — | Pays outer gas in sponsored mode; also deployment, funding, undelegation. Fallback recipient. |
-| `SPONSORED_OPERATION_DEADLINE_SECONDS` | `120` | Wallet mint-signature validity window (30–3600). |
+| `SPONSORED_EXECUTOR_ADDRESS` | — | Per-sponsor deterministic executor address (from `deploy-executor`), identical across supported chains. |
+| `SPONSORED_OPERATION_DEADLINE_SECONDS` | `120` | Wallet mint-signature validity window (`30-3600`). |
 | `FEE_AUTOMATIC` | `true` | Auto-estimate EIP-1559 fees; set `false` for manual `MAX_FEE_PER_GAS_GWEI` / `MAX_PRIORITY_FEE_PER_GAS_GWEI`. |
+| `MAX_FEE_PER_GAS_GWEI` | — | Manual max fee per gas in gwei (`FEE_AUTOMATIC=false`). |
+| `MAX_PRIORITY_FEE_PER_GAS_GWEI` | — | Manual priority fee per gas in gwei (`FEE_AUTOMATIC=false`). |
 | `GAS_LIMIT` | `300000` | Mint transaction gas limit. |
-| `TRANSACTION_MAX_ATTEMPTS` | `3` | Same-nonce replacement attempts (1–10). |
-| `PENDING_TIMEOUT_SECONDS` | `20` | Pending-tx timeout before replacement. |
-| `REPLACEMENT_BUMP_BPS` | `11250` | Replacement fee bump in basis points. |
-| `OPENSEA_REQUEST_TIMEOUT_MS` | `10000` | OpenSea request timeout. |
-| `OPENSEA_CALLDATA_MAX_ATTEMPTS` | `40` | T-2 calldata retry ceiling for not-ready/transient actions. |
-| `SCHEDULE_REFRESH_INTERVAL_SECONDS` | `600` | Phase metadata + eligibility refresh cadence during long schedules. |
+| `REPLACEMENT_BUMP_BPS` | `11250` | Replacement fee bump in basis points (`10001-20000`). |
+| `SCHEDULE_REFRESH_INTERVAL_SECONDS` | `600` | Phase metadata + eligibility refresh cadence during long schedules (`10-86400`). |
+| `TRANSACTION_MAX_ATTEMPTS` | `3` | Same-nonce replacement attempts (`1-10`). |
+| `PENDING_TIMEOUT_SECONDS` | `20` | Pending-tx timeout before replacement (`1-86400`). |
+| `RECEIPT_POLL_BASE_DELAY_MS` | `50` | Initial receipt-poll delay, exponential to the max (`50-60000`). |
+| `RECEIPT_POLL_MAX_DELAY_MS` | `2000` | Upper bound for receipt polling (`50-60000`). |
+| `OPENSEA_REQUEST_TIMEOUT_MS` | `10000` | OpenSea request timeout (`100-120000`). |
+| `ELIGIBILITY_REQUEST_TIMEOUT_MS` | `5000` | Eligibility request timeout (`100-120000`). |
+| `OPENSEA_MAX_ATTEMPTS` | `3` | OpenSea transport retry ceiling (`1-10`). |
+| `OPENSEA_RETRY_INTERVAL_MS` | `50` | Fixed interval between OpenSea retries (`50-30000`). |
+| `OPENSEA_CALLDATA_MAX_ATTEMPTS` | `40` | T-2 calldata retry ceiling for not-ready/transient actions (`1-1000`). |
 
 ### `.env` discovery
 
