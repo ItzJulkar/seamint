@@ -1548,15 +1548,30 @@ fn matching_collection_slug(
         let Some(result_address) = result.address.as_deref() else {
             continue;
         };
-        if result.kind != "Collection" || parse_address(Some(result_address))? != address {
+        // Skip results we cannot decode as a valid collection with the target
+        // address, rather than aborting the whole 50-result search on one
+        // malformed or unrelated entry.
+        let Ok(result_address) = parse_address(Some(result_address)) else {
+            continue;
+        };
+        if result.kind != "Collection" || result_address != address {
             continue;
         }
-        let chain = result.chain.ok_or(OpenSeaError::Compatibility)?;
-        if parse_network_id(chain.network_id.as_ref())? != expected_chain_id {
+        let Some(chain) = result.chain else {
+            continue;
+        };
+        let Ok(network_id) = parse_network_id(chain.network_id.as_ref()) else {
+            continue;
+        };
+        if network_id != expected_chain_id {
             continue;
         }
-        let slug = result.slug.ok_or(OpenSeaError::Compatibility)?;
-        validate_slug(&slug)?;
+        let Some(slug) = result.slug else {
+            continue;
+        };
+        if validate_slug(&slug).is_err() {
+            continue;
+        }
         matching.push(slug);
     }
     matching.sort_unstable();
@@ -2209,6 +2224,54 @@ mod tests {
                     "__typename": "Collection",
                     "slug": "no-contract",
                     "address": null,
+                    "chain": { "identifier": "base", "networkId": 8453 }
+                }
+            ]
+        }))
+        .expect("captured search shape");
+
+        assert_eq!(
+            matching_collection_slug(data, address, 8453).expect("exact result"),
+            "fixture"
+        );
+    }
+
+    #[test]
+    fn contract_search_skips_malformed_results_instead_of_aborting() {
+        let address = "0x90a76eca33e635ebb260a699ef9ee65d02335ed9"
+            .parse()
+            .expect("address");
+        let data: CollectionSearchData = serde_json::from_value(serde_json::json!({
+            "collectionsByQuery": [
+                {
+                    "__typename": "Collection",
+                    "slug": "bad-address",
+                    "address": "not-an-address",
+                    "chain": { "identifier": "base", "networkId": 8453 }
+                },
+                {
+                    "__typename": "Collection",
+                    "slug": "bad-network",
+                    "address": "0x90a76eca33e635ebb260a699ef9ee65d02335ed9",
+                    "chain": { "identifier": "base", "networkId": "not-a-number" }
+                },
+                {
+                    "__typename": "Collection",
+                    "slug": "no-chain",
+                    "address": "0x90a76eca33e635ebb260a699ef9ee65d02335ed9",
+                    "chain": null
+                },
+                {
+                    "__typename": "Collection",
+                    "slug": "no-slug",
+                    "address": "0x90a76eca33e635ebb260a699ef9ee65d02335ed9",
+                    "chain": { "identifier": "base", "networkId": 8453 },
+                    "slug": null
+                },
+                {
+                    "__typename": "Collection",
+                    "slug": "fixture",
+                    "address": "0x90a76eca33e635ebb260a699ef9ee65d02335ed9",
                     "chain": { "identifier": "base", "networkId": 8453 }
                 }
             ]

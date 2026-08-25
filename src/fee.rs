@@ -43,9 +43,12 @@ pub(crate) fn resolve_initial_fees(
                     // Etherscan tiers are total gas prices (base + tip), so the
                     // priority fee is the tier minus the current base fee.
                     let max_fee_per_gas = gwei_f64_to_wei(oracle.tier(level));
+                    // FeeEstimate.max_fee = 2×base + tip (see chain.rs), so the
+                    // live base fee is (max_fee − tip) / 2.
                     let base_fee = estimate
                         .max_fee_per_gas
-                        .saturating_sub(estimate.max_priority_fee_per_gas);
+                        .saturating_sub(estimate.max_priority_fee_per_gas)
+                        / alloy_primitives::U256::from(2);
                     let max_priority_fee_per_gas = max_fee_per_gas
                         .saturating_sub(base_fee)
                         .max(alloy_primitives::U256::from(1));
@@ -138,8 +141,9 @@ mod tests {
         // Default for Ethereum is slow → Etherscan SafeGasPrice 0.153 gwei.
         let fees = resolve_initial_fees(config, state, estimate).expect("fees");
         assert_eq!(fees.max_fee_per_gas, U256::from(153_000_000));
-        // priority = 0.153 gwei - base (0.162-0.001) clamped to >= 1 wei
-        assert!(fees.max_priority_fee_per_gas >= U256::from(1));
+        // priority = tier − base, where base = (max_fee − tip)/2 = (162M−1M)/2 =
+        // 80.5M → 153M − 80.5M = 72.5M wei (NOT clamped to 1).
+        assert_eq!(fees.max_priority_fee_per_gas, U256::from(72_500_000));
         assert_eq!(fees.max_fee_per_gas, U256::from(153_000_000));
     }
 
