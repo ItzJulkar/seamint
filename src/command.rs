@@ -2670,7 +2670,12 @@ fn validate_unambiguous_active_stage(
     for stage in &metadata.stages {
         let supports_token = stage_supports_token(stage, token_id);
         let stage_eligibility = matching_eligibility_stage(eligibility, stage)?;
+        // Only count stages this wallet can actually mint in. A concurrently
+        // open stage the wallet is ineligible for (e.g. an allowlist/GTD phase
+        // while the public sale is live) must not create false ambiguity.
+        let wallet_eligible = assess_wallet_eligibility(stage_eligibility, None).is_selectable();
         if supports_token
+            && wallet_eligible
             && quantity <= available_quantity(stage, stage_eligibility, eligibility)
             && stage_window(stage)?.execution_timing(block_timestamp) == ExecutionTiming::Immediate
         {
@@ -3032,6 +3037,32 @@ mod tests {
         let eligibility = eligibility_fixture(&metadata);
         assert!(matches!(
             validate_unambiguous_active_stage(&metadata, &eligibility, 1, "0", 1, 150),
+            Err(CommandError::AmbiguousActiveStage)
+        ));
+    }
+
+    #[test]
+    fn ineligible_allowlist_stage_does_not_block_an_eligible_public_stage() {
+        // An open allowlist/GTD phase the wallet is NOT on runs alongside the
+        // public sale. The wallet is eligible only for public, so the selected
+        // public stage must NOT be treated as ambiguous.
+        let metadata = collection_fixture(vec![
+            stage_fixture(1, "SIGNED_PRESALE", 100, Some(200)),
+            stage_fixture(2, "PUBLIC_SALE", 100, Some(200)),
+        ]);
+        let mut eligibility = eligibility_fixture(&metadata);
+        // The wallet is explicitly ineligible for the allowlist (stage 1) and
+        // eligible for the public stage (stage 2). PUBLIC_SALE stages carry no
+        // is_eligible verdict in the fixture (treated as always eligible).
+        eligibility.stages[0].is_eligible = Some(false);
+        assert!(matches!(
+            validate_unambiguous_active_stage(&metadata, &eligibility, 2, "0", 1, 150),
+            Ok(())
+        ));
+        // But if the wallet IS eligible for both, it remains ambiguous.
+        eligibility.stages[0].is_eligible = Some(true);
+        assert!(matches!(
+            validate_unambiguous_active_stage(&metadata, &eligibility, 2, "0", 1, 150),
             Err(CommandError::AmbiguousActiveStage)
         ));
     }
