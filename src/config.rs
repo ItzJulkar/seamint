@@ -501,9 +501,10 @@ impl AppConfig {
                     .into(),
             ));
         }
-        if !(10_001..=20_000).contains(&self.fees.replacement_bump_bps) {
+        if !(11_000..=20_000).contains(&self.fees.replacement_bump_bps) {
             return Err(ConfigError::Validation(
-                "REPLACEMENT_BUMP_BPS must be between 10001 and 20000".into(),
+                "REPLACEMENT_BUMP_BPS must be between 11000 and 20000 (EVM nodes require a >= 10% bump for a same-nonce replacement)"
+                    .into(),
             ));
         }
         match self.fees.mode {
@@ -899,7 +900,7 @@ mod tests {
                 "RECEIPT_POLL_MAX_DELAY_MS",
                 &["`2000`", "`50-60000`"] as &[&str],
             ),
-            ("REPLACEMENT_BUMP_BPS", &["`11250`", "`10001-20000`"][..]),
+            ("REPLACEMENT_BUMP_BPS", &["`11250`", "`11000-20000`"][..]),
             (
                 "SCHEDULE_REFRESH_INTERVAL_SECONDS",
                 &["`600`", "`10-86400`"] as &[&str],
@@ -1032,6 +1033,7 @@ mod tests {
             ("RECEIPT_POLL_BASE_DELAY_MS", "49"),
             ("RECEIPT_POLL_MAX_DELAY_MS", "60001"),
             ("REPLACEMENT_BUMP_BPS", "10000"),
+            ("REPLACEMENT_BUMP_BPS", "10999"),
             ("REPLACEMENT_BUMP_BPS", "20001"),
         ] {
             let mut invalid_values = base_values();
@@ -1042,6 +1044,12 @@ mod tests {
                 "{name}={value} must be rejected"
             );
         }
+
+        // 11000 (the 10% EVM-node minimum) is the accepted lower bound.
+        let mut min_bump = base_values();
+        min_bump.insert("WALLET_KEY".into(), KEY.into());
+        min_bump.insert("REPLACEMENT_BUMP_BPS".into(), "11000".into());
+        assert!(LoadedConfig::from_values(min_bump, PathBuf::from("C:/mint/.env")).is_ok());
 
         let mut reversed_delays = base_values();
         reversed_delays.insert("WALLET_KEY".into(), KEY.into());

@@ -91,7 +91,7 @@ A single `.env` drives everything. The important knobs:
 | `MAX_FEE_PER_GAS_GWEI` | — | Manual max fee per gas in gwei (`FEE_AUTOMATIC=false`). |
 | `MAX_PRIORITY_FEE_PER_GAS_GWEI` | — | Manual priority fee per gas in gwei (`FEE_AUTOMATIC=false`). |
 | `GAS_LIMIT` | `300000` | Mint transaction gas limit. |
-| `REPLACEMENT_BUMP_BPS` | `11250` | Replacement fee bump in basis points (`10001-20000`). |
+| `REPLACEMENT_BUMP_BPS` | `11250` | Replacement fee bump in basis points (`11000-20000`). EVM nodes reject a same-nonce replacement unless fees rise by >= 10% (1000 bps), so the lower bound is 11000. |
 | `SCHEDULE_REFRESH_INTERVAL_SECONDS` | `600` | Phase metadata + eligibility refresh cadence during long schedules (`10-86400`). |
 | `TRANSACTION_MAX_ATTEMPTS` | `3` | Same-nonce replacement attempts (`1-10`). |
 | `PENDING_TIMEOUT_SECONDS` | `20` | Pending-tx timeout before replacement (`1-86400`). |
