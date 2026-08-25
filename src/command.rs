@@ -103,6 +103,11 @@ pub enum Command {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    /// Configure multi-wallet recipient behavior (`seamint multi wallet recipient`).
+    Multi {
+        #[command(subcommand)]
+        command: MultiCommand,
+    },
     /// Configure a supported network's settings (currently Ethereum mainnet).
     Eth {
         #[command(subcommand)]
@@ -139,6 +144,42 @@ pub enum WalletCommand {
         #[arg(long, short, default_value = "wallets.json")]
         output: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MultiCommand {
+    /// Multi-wallet NFT recipient settings.
+    Wallet {
+        #[command(subcommand)]
+        command: WalletRecipientCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WalletRecipientCommand {
+    /// Choose where minted NFTs go.
+    Recipient {
+        #[command(subcommand)]
+        command: RecipientCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RecipientCommand {
+    /// Each minting wallet keeps its own NFT (self-funded default).
+    On {
+        /// Optional recipient address to store; used for withdrawals and when `off` is later enabled.
+        #[arg(long, value_name = "ADDRESS")]
+        recipient: Option<String>,
+    },
+    /// Forward every minted NFT to a single recipient address.
+    Off {
+        /// Recipient address that receives all NFTs.
+        #[arg(long, value_name = "ADDRESS")]
+        recipient: Option<String>,
+    },
+    /// Show the current recipient mode and address.
+    Status,
 }
 
 #[derive(Debug, Error)]
@@ -183,6 +224,14 @@ pub enum CommandError {
     InvalidTokenId,
     #[error("selected quantity exceeds the wallet eligibility limit")]
     QuantityExceedsEligibility,
+    #[error("multi-wallet recipient settings require WALLETS_FILE (multi-wallet mode)")]
+    MultiWalletRecipientRequired,
+    #[error(
+        "sponsored minting always forwards NFTs; keep-own (recipient on) is only available in self-funded mode"
+    )]
+    SponsoredKeepOwnUnsupported,
+    #[error("invalid recipient address: {0}")]
+    InvalidRecipientAddress(String),
     #[error(
         "more than one mint stage is active, so OpenSea's action cannot be bound to the selection"
     )]
@@ -249,6 +298,7 @@ pub enum CommandError {
     DeploymentReverted(u64),
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn execute(cli: Cli) -> Result<(), CommandError> {
     let command = match cli.command {
         Command::Wallets { command } => return create_wallets(command),
@@ -258,6 +308,11 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
                 command: MainnetCommand::GasFee,
             },
         } => return set_eth_mainnet_gas_fee().await,
+        Command::Multi {
+            command: MultiCommand::Wallet {
+                command: WalletRecipientCommand::Recipient { command },
+            },
+        } => return configure_recipient(command),
         command => command,
     };
     let loaded = LoadedConfig::load()?;
@@ -312,6 +367,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
                 unreachable!("handled before configuration loading")
             }
             Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
+            Command::Multi { .. } => unreachable!("handled before configuration loading"),
             Command::Eth { .. } => unreachable!("handled before configuration loading"),
         };
     }
@@ -345,6 +401,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
             unreachable!("handled before configuration loading")
         }
         Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
+        Command::Multi { .. } => unreachable!("handled before configuration loading"),
         Command::Eth { .. } => unreachable!("handled before configuration loading"),
     }
 }
@@ -409,6 +466,93 @@ fn upsert_env_setting(path: &std::path::Path, key: &str, value: &str) -> Result<
     output.push_str(separator);
     std::fs::write(path, output).map_err(CommandError::SubmissionOutput)?;
     Ok(())
+}
+
+/// Read a single `KEY=value` line from a `.env` file without full validation.
+fn read_env_setting(path: &std::path::Path, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    for line in contents.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == key {
+                return Some(v.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Validate and persist a recipient address as `RECIPIENT_ADDRESS` in `.env`.
+fn write_recipient_address(path: &std::path::Path, address: &str) -> Result<(), CommandError> {
+    let parsed: Address = address
+        .parse()
+        .map_err(|_| CommandError::InvalidRecipientAddress(address.to_owned()))?;
+    if parsed == Address::ZERO {
+        return Err(CommandError::InvalidRecipientAddress(address.to_owned()));
+    }
+    upsert_env_setting(path, "RECIPIENT_ADDRESS", &parsed.to_checksum(None))
+}
+
+/// Configure multi-wallet NFT recipient behavior by editing `.env` directly
+/// (so it works even before the rest of the file is complete):
+/// - `on`  -> each minting wallet keeps its own NFT (self-funded default).
+/// - `off` -> every NFT is forwarded to `RECIPIENT_ADDRESS`.
+fn configure_recipient(command: RecipientCommand) -> Result<(), CommandError> {
+    let path = crate::config::environment_path()?;
+    let has_wallets = read_env_setting(&path, "WALLETS_FILE").is_some();
+    let is_sponsored = read_env_setting(&path, "SPONSORED")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
+    match command {
+        RecipientCommand::Status => {
+            let forward = read_env_setting(&path, "RECIPIENT_FORWARD");
+            let address = read_env_setting(&path, "RECIPIENT_ADDRESS");
+            let mode = match forward.as_deref() {
+                Some("true") => "OFF (all NFTs forward to the recipient address)".to_owned(),
+                Some("false") | None => "ON (each minting wallet keeps its own NFT)".to_owned(),
+                Some(other) => format!("unknown ({other})"),
+            };
+            logging::info(format!("Recipient mode: {mode}"));
+            match address {
+                Some(addr) => logging::info(format!("RECIPIENT_ADDRESS: {addr}")),
+                None => logging::info("RECIPIENT_ADDRESS: not set"),
+            }
+            if !has_wallets {
+                logging::warn("WALLETS_FILE is not set; recipient settings only apply to multi-wallet minting.");
+            }
+            Ok(())
+        }
+        RecipientCommand::On { recipient } => {
+            if !has_wallets {
+                return Err(CommandError::MultiWalletRecipientRequired);
+            }
+            if is_sponsored {
+                return Err(CommandError::SponsoredKeepOwnUnsupported);
+            }
+            upsert_env_setting(&path, "RECIPIENT_FORWARD", "false")?;
+            if let Some(address) = recipient {
+                write_recipient_address(&path, &address)?;
+            }
+            logging::success("Recipient mode ON: each minting wallet keeps its own NFT.");
+            logging::info(format!("RECIPIENT_FORWARD=false written to {}.", path.display()));
+            Ok(())
+        }
+        RecipientCommand::Off { recipient } => {
+            if !has_wallets {
+                return Err(CommandError::MultiWalletRecipientRequired);
+            }
+            if let Some(address) = recipient {
+                write_recipient_address(&path, &address)?;
+            }
+            upsert_env_setting(&path, "RECIPIENT_FORWARD", "true")?;
+            if read_env_setting(&path, "RECIPIENT_ADDRESS").is_none() {
+                logging::warn(
+                    "RECIPIENT_ADDRESS is not set; minting will fail until you set it (use --recipient <address>).",
+                );
+            }
+            logging::success("Recipient mode OFF: every NFT will be forwarded to RECIPIENT_ADDRESS.");
+            logging::info(format!("RECIPIENT_FORWARD=true written to {}.", path.display()));
+            Ok(())
+        }
+    }
 }
 
 struct ExecutorDeploymentPlan {

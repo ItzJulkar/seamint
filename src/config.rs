@@ -20,6 +20,7 @@ const KNOWN_SETTINGS: &[&str] = &[
     "WALLET_KEY",
     "WALLETS_FILE",
     "SPONSORED",
+    "RECIPIENT_FORWARD",
     "RECIPIENT_ADDRESS",
     "SPONSOR_KEY",
     "SPONSORED_EXECUTOR_ADDRESS",
@@ -175,6 +176,9 @@ pub struct DeploymentConfig {
 pub struct MultiWalletConfig {
     pub manifest_path: PathBuf,
     pub recipient: Address,
+    /// When true, every minted NFT is forwarded to `recipient`. When false
+    /// (the self-funded default), each minting wallet keeps its own NFT.
+    pub recipient_forward: bool,
     pub mode: MultiWalletMode,
 }
 
@@ -189,6 +193,15 @@ pub struct SponsoredConfig {
     pub executor: Address,
     pub wallet_gas_limit: u64,
     pub operation_deadline_seconds: u64,
+}
+
+/// Locate the active `.env` file without parsing or validating it. This is used
+/// by setup commands that must run even when the file is incomplete.
+pub fn environment_path() -> Result<PathBuf, ConfigError> {
+    let current = env::current_dir().map_err(ConfigError::CurrentDirectory)?;
+    let executable = env::current_exe().map_err(ConfigError::CurrentExecutable)?;
+    let start = environment_search_start(&current, &executable);
+    find_environment_file(&start)
 }
 
 impl LoadedConfig {
@@ -610,6 +623,13 @@ fn parse_multi_wallet_config(
                 "required when SPONSOR_KEY is not configured",
             )
         })?;
+    // Forwarding defaults to ON for sponsored minting (the executor always
+    // forwards the NFT to the recipient) and OFF for self-funded minting
+    // (each wallet keeps its own NFT) unless RECIPIENT_FORWARD is set.
+    let recipient_forward = match values.remove("RECIPIENT_FORWARD") {
+        Some(value) => parse_bool(&value, "RECIPIENT_FORWARD")?,
+        None => is_sponsored,
+    };
 
     let mode = if is_sponsored {
         if sponsor_key.is_none() {
@@ -622,6 +642,12 @@ fn parse_multi_wallet_config(
                 "must differ from SPONSORED_EXECUTOR_ADDRESS",
             ));
         }
+        if !recipient_forward {
+            return Err(invalid(
+                "RECIPIENT_FORWARD",
+                "sponsored minting always forwards NFTs to the recipient; set RECIPIENT_FORWARD=true or use self-funded mode",
+            ));
+        }
         MultiWalletMode::Sponsored(sponsored)
     } else {
         reject_sponsored_settings(values)?;
@@ -632,6 +658,7 @@ fn parse_multi_wallet_config(
         MultiWalletConfig {
             manifest_path,
             recipient,
+            recipient_forward,
             mode,
         },
         sponsor_key,
@@ -670,6 +697,7 @@ fn parse_sponsored_config(
 fn reject_multi_wallet_settings(values: &BTreeMap<String, String>) -> Result<(), ConfigError> {
     const SETTINGS: &[&str] = &[
         "SPONSORED",
+        "RECIPIENT_FORWARD",
         "RECIPIENT_ADDRESS",
         "SPONSOR_KEY",
         "SPONSORED_EXECUTOR_ADDRESS",
@@ -1039,7 +1067,90 @@ mod tests {
 
         assert_eq!(multi.manifest_path, PathBuf::from("C:/mint/wallets.json"));
         assert_eq!(multi.mode, MultiWalletMode::SelfFunded);
+        // Default recipient mode for self-funded is keep-own (no forwarding).
+        assert!(!multi.recipient_forward);
         assert!(loaded.wallet_key().is_none());
+    }
+
+    #[test]
+    fn recipient_forward_is_read_from_config_and_defaults_to_sponsored() {
+        // Self-funded + RECIPIENT_FORWARD=true -> forward to the recipient.
+        let mut values = base_values();
+        values.extend([
+            ("WALLETS_FILE".into(), "wallets.json".into()),
+            ("SPONSORED".into(), "false".into()),
+            ("RECIPIENT_FORWARD".into(), "true".into()),
+            (
+                "RECIPIENT_ADDRESS".into(),
+                "0x0000000000000000000000000000000000000011".into(),
+            ),
+        ]);
+        let loaded = LoadedConfig::from_values(values, PathBuf::from("C:/mint/.env"))
+            .expect("self-funded forward config");
+        assert!(loaded.multi_wallet().expect("multi config").recipient_forward);
+
+        // Self-funded without RECIPIENT_FORWARD -> keep-own (default off).
+        let mut keep_own = base_values();
+        keep_own.extend([
+            ("WALLETS_FILE".into(), "wallets.json".into()),
+            ("SPONSORED".into(), "false".into()),
+            (
+                "RECIPIENT_ADDRESS".into(),
+                "0x0000000000000000000000000000000000000011".into(),
+            ),
+        ]);
+        let loaded = LoadedConfig::from_values(keep_own, PathBuf::from("C:/mint/.env"))
+            .expect("self-funded keep-own config");
+        assert!(!loaded.multi_wallet().expect("multi config").recipient_forward);
+
+        // Sponsored without RECIPIENT_FORWARD -> forwarding defaults on.
+        let mut sponsored = base_values();
+        sponsored.extend([
+            ("WALLETS_FILE".into(), "wallets.json".into()),
+            ("SPONSORED".into(), "true".into()),
+            ("SPONSOR_KEY".into(), KEY.into()),
+            (
+                "SPONSORED_EXECUTOR_ADDRESS".into(),
+                "0x0000000000000000000000000000000000000011".into(),
+            ),
+        ]);
+        let loaded = LoadedConfig::from_values(sponsored, PathBuf::from("C:/mint/.env"))
+            .expect("sponsored config");
+        assert!(loaded.multi_wallet().expect("multi config").recipient_forward);
+    }
+
+    #[test]
+    fn sponsored_mode_rejects_recipient_forward_false() {
+        let mut values = base_values();
+        values.extend([
+            ("WALLETS_FILE".into(), "wallets.json".into()),
+            ("SPONSORED".into(), "true".into()),
+            ("SPONSOR_KEY".into(), KEY.into()),
+            ("RECIPIENT_FORWARD".into(), "false".into()),
+            (
+                "SPONSORED_EXECUTOR_ADDRESS".into(),
+                "0x0000000000000000000000000000000000000011".into(),
+            ),
+        ]);
+        let error = LoadedConfig::from_values(values, PathBuf::from("C:/mint/.env"))
+            .expect_err("sponsored keep-own is unsupported");
+        assert!(matches!(
+            error,
+            ConfigError::InvalidSetting {
+                name: "RECIPIENT_FORWARD",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn recipient_forward_is_rejected_in_single_wallet_mode() {
+        let mut values = base_values();
+        values.insert("WALLET_KEY".into(), KEY.into());
+        values.insert("RECIPIENT_FORWARD".into(), "true".into());
+        let error = LoadedConfig::from_values(values, PathBuf::from("C:/mint/.env"))
+            .expect_err("single-wallet recipient forward");
+        assert!(matches!(error, ConfigError::Validation(_)));
     }
 
     #[test]

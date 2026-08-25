@@ -79,7 +79,8 @@ A single `.env` drives everything. The important knobs:
 | `WALLET_KEY` | — | Single-wallet mode: the one signing key. |
 | `WALLETS_FILE` | — | Multi-wallet mode: path to the generated manifest. |
 | `SPONSORED` | — | `true` = sponsored EIP-7702 mode, `false` = self-funded concurrent. |
-| `RECIPIENT_ADDRESS` | — | Where minted NFTs go in multi-wallet mode. Must differ from the executor. |
+| `RECIPIENT_FORWARD` | `false` | `true` = forward every minted NFT to `RECIPIENT_ADDRESS`; `false` = each minting wallet keeps its own NFT (self-funded default). Sponsored mode always forwards. |
+| `RECIPIENT_ADDRESS` | — | NFT forward target (when `RECIPIENT_FORWARD=true`) and the withdrawal destination for `mint --withdraw`. Must differ from the executor. |
 | `SPONSOR_KEY` | — | Pays outer gas in sponsored mode; also deployment, funding, undelegation. Fallback recipient. |
 | `SPONSORED_EXECUTOR_ADDRESS` | — | Per-sponsor deterministic executor address (from `deploy-executor`), identical across supported chains. |
 | `SPONSORED_OPERATION_DEADLINE_SECONDS` | `120` | Wallet mint-signature validity window (`30-3600`). |
@@ -125,7 +126,22 @@ Multi-wallet specifics:
 - **Self-funded** — during setup, the CLI computes mint value + max gas + fees
   locally and prompts to top up / recheck / skip underfunded wallets. Execution
   is concurrent and independent; receipts are verified and NFTs extracted.
-  Wallets that succeed sign a separate safe-transfer when a recipient is set.
+  Wallets that succeed sign a separate safe-transfer only when
+  `RECIPIENT_FORWARD=true`.
+
+Recipient mode can be switched with a single command without editing `.env`:
+
+- `seamint multi wallet recipient on` — each minting wallet keeps its own NFT
+  (self-funded default). Optional `--recipient <address>` stores a withdrawal
+  address for later.
+- `seamint multi wallet recipient off [--recipient <address>]` — every NFT is
+  forwarded to `RECIPIENT_ADDRESS`.
+- `seamint multi wallet recipient status` — show the current mode and address.
+
+Keep-own (`on`) is only available in self-funded mode: the sponsored EIP-7702
+executor always forwards the NFT to the recipient, so sponsored minting
+requires `RECIPIENT_FORWARD=true`. In keep-own mode `RECIPIENT_ADDRESS` is still
+used as the withdrawal destination for `mint --withdraw`.
 
 ## Executor
 

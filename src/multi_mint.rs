@@ -313,7 +313,7 @@ pub async fn run(
             MultiWalletMode::SelfFunded => "self-funded",
             MultiWalletMode::Sponsored(_) => "sponsored EIP-7702",
         },
-        &multi.recipient.to_checksum(None),
+        &recipient_label(multi),
     )?;
     let mut first_sessions = Some(first_sessions);
     for (position, phase) in scheduled.iter().enumerate() {
@@ -361,6 +361,15 @@ fn warn_sponsored_revocation(message: &str) {
     logging::warn_with_command(message, terminal::undelegate_command());
 }
 
+/// Human-readable NFT destination shown before a multi-wallet mint runs.
+fn recipient_label(multi: &MultiWalletConfig) -> String {
+    if multi.recipient_forward {
+        multi.recipient.to_checksum(None)
+    } else {
+        "each minting wallet (keep-own)".to_owned()
+    }
+}
+
 async fn prepare_phase_setup(
     context: &MultiRunContext<'_>,
     metadata: &CollectionMetadata,
@@ -381,6 +390,7 @@ async fn prepare_phase_setup(
                 metadata,
                 stage,
                 context.multi.recipient,
+                context.multi.recipient_forward,
                 &mut eligible,
             )
             .await?;
@@ -482,6 +492,7 @@ async fn execute_multi_phase(
             context.config,
             &refreshed,
             context.multi.recipient,
+            context.multi.recipient_forward,
             &mut candidates,
         )?,
         MultiWalletMode::Sponsored(_) => {
@@ -534,6 +545,7 @@ async fn execute_multi_phase(
                 &refreshed,
                 token_id,
                 context.multi.recipient,
+                context.multi.recipient_forward,
                 actions,
                 MAX_SELF_FUNDED_WALLETS,
             )
@@ -957,6 +969,7 @@ async fn ensure_self_funded_setup_funding(
     metadata: &CollectionMetadata,
     stage: &StageMetadata,
     recipient: Address,
+    recipient_forward: bool,
     sessions: &mut Vec<SessionWallet>,
 ) -> Result<(), MultiMintError> {
     loop {
@@ -988,6 +1001,7 @@ async fn ensure_self_funded_setup_funding(
                     &config,
                     &drop_kind,
                     recipient,
+                    recipient_forward,
                     address,
                     quantity,
                     expected_mint_value.unwrap_or(U256::ZERO),
@@ -1034,6 +1048,7 @@ fn filter_underfunded_launch_candidates(
     config: &AppConfig,
     metadata: &CollectionMetadata,
     recipient: Address,
+    recipient_forward: bool,
     candidates: &mut Vec<ActionCandidate>,
 ) -> Result<(), MultiMintError> {
     let mut underfunded = HashSet::new();
@@ -1043,6 +1058,7 @@ fn filter_underfunded_launch_candidates(
             config,
             &metadata.drop_kind,
             recipient,
+            recipient_forward,
             address,
             candidate.session.entry.quantity(),
             candidate.expected_mint_value.unwrap_or(U256::ZERO),
@@ -1096,16 +1112,19 @@ fn filter_underfunded_sponsored_candidates(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn self_funded_requirement(
     config: &AppConfig,
     drop_kind: &str,
     recipient: Address,
+    recipient_forward: bool,
     wallet: Address,
     quantity: u64,
     mint_value: U256,
     fee_estimate: FeeEstimate,
 ) -> Result<FundingRequirement, MultiMintError> {
-    let transaction_count = self_funded_transaction_count(drop_kind, recipient, wallet, quantity)?;
+    let transaction_count =
+        self_funded_transaction_count(drop_kind, recipient, recipient_forward, wallet, quantity)?;
     let gas_limit = config
         .gas_limit
         .checked_mul(transaction_count)
@@ -1122,10 +1141,11 @@ fn self_funded_requirement(
 fn self_funded_transaction_count(
     drop_kind: &str,
     recipient: Address,
+    recipient_forward: bool,
     wallet: Address,
     quantity: u64,
 ) -> Result<u64, MultiMintError> {
-    let transfer_count = if recipient == wallet {
+    let transfer_count = if !recipient_forward || recipient == wallet {
         0
     } else if drop_kind == "Erc721SeaDropV1" {
         quantity
@@ -1320,6 +1340,7 @@ async fn run_self_funded(
     metadata: &CollectionMetadata,
     token_id: &str,
     recipient: Address,
+    recipient_forward: bool,
     actions: Vec<ActionWallet>,
     concurrency: usize,
 ) -> Result<(), MultiMintError> {
@@ -1327,7 +1348,7 @@ async fn run_self_funded(
     for wallet in actions {
         let fees = initial_transaction_fees(config.fees, wallet.fee_estimate)?;
         let maximum_fees = maximum_transaction_fees(config.fees, config.retry.max_attempts, fees)?;
-        let transfer_count = if recipient == wallet.entry.address() {
+        let transfer_count = if !recipient_forward || recipient == wallet.entry.address() {
             0
         } else if metadata.drop_kind == "Erc721SeaDropV1" {
             wallet.entry.quantity()
@@ -1386,7 +1407,15 @@ async fn run_self_funded(
                 .await
                 .map_err(|_| MultiMintError::Worker)?;
             execute_self_funded_wallet(
-                &config, &gateway, &chain, rpc_index, &metadata, &token_id, recipient, wallet,
+                &config,
+                &gateway,
+                &chain,
+                rpc_index,
+                &metadata,
+                &token_id,
+                recipient,
+                recipient_forward,
+                wallet,
             )
             .await
         });
@@ -1424,6 +1453,7 @@ async fn execute_self_funded_wallet(
     metadata: &CollectionMetadata,
     token_id: &str,
     recipient: Address,
+    recipient_forward: bool,
     wallet: SelfFundedWallet,
 ) -> Result<Address, MultiMintError> {
     let address = wallet.wallet.entry.address();
@@ -1455,7 +1485,7 @@ async fn execute_self_funded_wallet(
         "Mint confirmed for {address}: {} in block {}.",
         receipt.transaction_hash, receipt.block_number
     ));
-    if recipient == address {
+    if !recipient_forward || recipient == address {
         return Ok(address);
     }
     let token_id_number = token_id.parse().map_err(|_| MultiMintError::StageChanged)?;
@@ -2658,18 +2688,25 @@ mod tests {
         let wallet = Address::repeat_byte(0x11);
         let recipient = Address::repeat_byte(0x22);
 
+        // Keep-own: no forwarding transactions regardless of recipient.
         assert_eq!(
-            self_funded_transaction_count("Erc721SeaDropV1", wallet, wallet, 3)
-                .expect("wallet recipient"),
+            self_funded_transaction_count("Erc721SeaDropV1", wallet, false, wallet, 3)
+                .expect("keep-own wallet"),
             1
         );
         assert_eq!(
-            self_funded_transaction_count("Erc721SeaDropV1", recipient, wallet, 3)
+            self_funded_transaction_count("Erc721SeaDropV1", recipient, false, wallet, 3)
+                .expect("keep-own ignores recipient"),
+            1
+        );
+        // Forwarding: recipient differs and forwarding is enabled.
+        assert_eq!(
+            self_funded_transaction_count("Erc721SeaDropV1", recipient, true, wallet, 3)
                 .expect("ERC-721 forwarding"),
             4
         );
         assert_eq!(
-            self_funded_transaction_count("Erc1155SeaDropV2", recipient, wallet, 3)
+            self_funded_transaction_count("Erc1155SeaDropV2", recipient, true, wallet, 3)
                 .expect("ERC-1155 forwarding"),
             2
         );
