@@ -113,6 +113,17 @@ pub enum Command {
         #[command(subcommand)]
         command: EthCommand,
     },
+    /// Show the current RPC chain and select a supported network's endpoint.
+    Chain {
+        #[command(subcommand)]
+        command: ChainCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChainCommand {
+    /// Show the current RPC URL/chain and select a network (1 = Ink, 2 = Robinhood, 3 = Ethereum).
+    Rpc,
 }
 
 #[derive(Debug, Subcommand)]
@@ -308,6 +319,9 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
                 command: MainnetCommand::GasFee,
             },
         } => return set_eth_mainnet_gas_fee().await,
+        Command::Chain {
+            command: ChainCommand::Rpc,
+        } => return set_chain_rpc(),
         Command::Multi {
             command: MultiCommand::Wallet {
                 command: WalletRecipientCommand::Recipient { command },
@@ -369,6 +383,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
             Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
             Command::Multi { .. } => unreachable!("handled before configuration loading"),
             Command::Eth { .. } => unreachable!("handled before configuration loading"),
+            Command::Chain { .. } => unreachable!("handled before configuration loading"),
         };
     }
     if let Command::Mint {
@@ -403,6 +418,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
         Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
         Command::Multi { .. } => unreachable!("handled before configuration loading"),
         Command::Eth { .. } => unreachable!("handled before configuration loading"),
+        Command::Chain { .. } => unreachable!("handled before configuration loading"),
     }
 }
 
@@ -438,6 +454,46 @@ async fn set_eth_mainnet_gas_fee() -> Result<(), CommandError> {
         path.display()
     ));
     logging::info("On Ethereum mainnet this maps to the real Etherscan gas-tracker value for that tier.");
+    Ok(())
+}
+
+/// Show the currently configured RPC/chain and let the user select a supported
+/// network (`RPC_URL` in `.env`). Runs without loading the rest of `.env`, so
+/// it works even before the file is complete.
+fn set_chain_rpc() -> Result<(), CommandError> {
+    let path = crate::config::environment_path()?;
+    let current = read_env_setting(&path, "RPC_URL");
+    logging::section_break();
+    logging::info("Current RPC_URL:");
+    match current.as_deref() {
+        Some(url) if !url.is_empty() => {
+            let detected = terminal::SUPPORTED_CHAINS
+                .iter()
+                .find(|chain| chain.rpc_url == url);
+            match detected {
+                Some(chain) => logging::info(format!(
+                    "  {url}  ->  {} (chain {})",
+                    chain.name, chain.chain_id
+                )),
+                None => logging::info(format!("  {url}  (custom network, not in the preset list)")),
+            }
+        }
+        Some(_) => logging::warn("RPC_URL is set but empty in the active .env."),
+        None => logging::warn("RPC_URL is not set in the active .env."),
+    }
+    let selected = terminal::prompt_chain_rpc()?;
+    upsert_env_setting(&path, "RPC_URL", selected.rpc_url)?;
+    logging::success(format!(
+        "RPC_URL set to {} ({} — chain {}) in {}.",
+        selected.rpc_url,
+        selected.name,
+        selected.chain_id,
+        path.display()
+    ));
+    logging::info(format!(
+        "Run `seamint doctor` to confirm the RPC is reachable on chain {}.",
+        selected.chain_id
+    ));
     Ok(())
 }
 

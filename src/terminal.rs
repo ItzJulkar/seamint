@@ -446,6 +446,67 @@ pub fn prompt_gas_fee_level() -> Result<crate::domain::GasFeeLevel, TerminalErro
     }
 }
 
+/// A supported network with its canonical public RPC endpoint. The `rpc_url`
+/// is what gets written to `RPC_URL` in `.env`; `chain_id` is shown to the
+/// user so they can match it against what `seamint doctor` reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainSelection {
+    pub name: &'static str,
+    pub chain_id: u64,
+    pub rpc_url: &'static str,
+}
+
+/// The chains offered by `seamint chain rpc`, in selectable order (1, 2, 3).
+/// The order is deliberate: Ink, Robinhood, then Ethereum.
+pub const SUPPORTED_CHAINS: &[ChainSelection] = &[
+    ChainSelection {
+        name: "Ink",
+        chain_id: 57073,
+        rpc_url: "https://rpc-qnd.inkonchain.com",
+    },
+    ChainSelection {
+        name: "Robinhood",
+        chain_id: 4663,
+        rpc_url: "https://rpc.mainnet.chain.robinhood.com",
+    },
+    ChainSelection {
+        name: "Ethereum",
+        chain_id: 1,
+        rpc_url: "https://ethereum-rpc.publicnode.com",
+    },
+];
+
+/// Prompt the user to choose a supported chain's RPC endpoint.
+///
+/// The choice (1 = Ink, 2 = Robinhood, 3 = Ethereum) maps to
+/// [`SUPPORTED_CHAINS`]. Cancelling with `q` returns `TerminalError::Cancelled`.
+pub fn prompt_chain_rpc() -> Result<&'static ChainSelection, TerminalError> {
+    logging::section_break();
+    logging::info("Supported networks (RPC endpoint written to RPC_URL):");
+    for (index, chain) in SUPPORTED_CHAINS.iter().enumerate() {
+        logging::info(format!(
+            "{} = {} (chain {}, {})",
+            index + 1,
+            chain.name,
+            chain.chain_id,
+            chain.rpc_url
+        ));
+    }
+    loop {
+        let input = prompt("Select a network [1-3]: ")?;
+        if input.eq_ignore_ascii_case("q") {
+            return Err(TerminalError::Cancelled);
+        }
+        let index = input.trim().parse::<usize>();
+        if let Ok(index) = index
+            && let Some(chain) = SUPPORTED_CHAINS.get(index.checked_sub(1).unwrap_or(usize::MAX))
+        {
+            return Ok(chain);
+        }
+        logging::warn(format!("Enter a number from 1 to {}.", SUPPORTED_CHAINS.len()));
+    }
+}
+
 fn format_token_range(range: Option<(u64, u64)>) -> impl fmt::Display {
     range.map_or_else(
         || "ERC-721".to_owned(),
@@ -464,6 +525,33 @@ mod tests {
         assert_eq!(parse_phase_selection("2", &options), None);
         assert_eq!(parse_phase_selection("0", &options), None);
         assert_eq!(parse_phase_selection("", &options), None);
+    }
+
+    #[test]
+    fn supported_chains_are_unique_and_preset_in_ink_robinhood_ethereum_order() {
+        assert_eq!(SUPPORTED_CHAINS.len(), 3);
+        assert_eq!(SUPPORTED_CHAINS[0].name, "Ink");
+        assert_eq!(SUPPORTED_CHAINS[0].chain_id, 57073);
+        assert_eq!(SUPPORTED_CHAINS[1].name, "Robinhood");
+        assert_eq!(SUPPORTED_CHAINS[1].chain_id, 4663);
+        assert_eq!(SUPPORTED_CHAINS[2].name, "Ethereum");
+        assert_eq!(SUPPORTED_CHAINS[2].chain_id, 1);
+        // Every preset RPC must be https and each chain_id distinct.
+        let mut ids = std::collections::HashSet::new();
+        for chain in SUPPORTED_CHAINS {
+            assert!(chain.rpc_url.starts_with("https://"), "{} must be https", chain.name);
+            assert!(chain.rpc_url.contains("://"), "{} has a host", chain.name);
+            assert!(ids.insert(chain.chain_id), "duplicate chain_id {}", chain.chain_id);
+        }
+    }
+
+    #[test]
+    fn every_supported_chain_rpc_url_is_https_with_a_host() {
+        for chain in SUPPORTED_CHAINS {
+            let url: url::Url = chain.rpc_url.parse().expect("valid URL");
+            assert_eq!(url.scheme(), "https");
+            assert!(url.host_str().is_some());
+        }
     }
 
     #[test]

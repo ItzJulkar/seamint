@@ -44,6 +44,8 @@ seamint calldata --collection SLUG --wallets FILE [--token-id N]
 seamint wallets create --count N --quantity Q --output FILE
                             Generate a fresh wallet manifest (offline)
 seamint eth mainnet gas-fee   Set Ethereum mainnet gas fee level (1=slow, 2=medium, 3=fast)
+seamint chain rpc             Show the current RPC chain and select a network
+                              (1 = Ink, 2 = Robinhood, 3 = Ethereum); writes RPC_URL to .env
 ```
 
 `seamint doctor` is the first thing you run after configuring — it checks the
