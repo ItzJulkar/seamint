@@ -20,7 +20,7 @@ impl PhaseWindow {
         if block_timestamp < self.starts_at {
             return ExecutionTiming::ScheduledAt(self.starts_at);
         }
-        if self.ends_at.is_some_and(|end| block_timestamp >= end) {
+        if self.ends_at.is_some_and(|end| block_timestamp > end) {
             return ExecutionTiming::Ended;
         }
 

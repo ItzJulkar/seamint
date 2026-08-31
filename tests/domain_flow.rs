@@ -8,10 +8,14 @@ fn an_open_phase_executes_immediately() {
 }
 
 #[test]
-fn phase_end_timestamp_is_exclusive() {
+fn phase_end_timestamp_is_inclusive_like_seadrop() {
+    // SeaDrop's _checkActive reverts only when block.timestamp > endTime, so a
+    // mint at exactly endTime is valid on-chain. The CLI must mirror that:
+    // Ended only when the timestamp is strictly after the end.
     let phase = PhaseWindow::new(100, Some(200)).expect("valid phase");
 
-    assert_eq!(phase.execution_timing(200), ExecutionTiming::Ended);
+    assert_eq!(phase.execution_timing(200), ExecutionTiming::Immediate);
+    assert_eq!(phase.execution_timing(201), ExecutionTiming::Ended);
     assert_eq!(phase.execution_timing(199), ExecutionTiming::Immediate);
 }
 

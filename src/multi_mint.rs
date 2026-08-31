@@ -40,8 +40,8 @@ use crate::{
     },
     terminal::{self, ConfiguredPhase, PhaseOption, TerminalError, TopUpDecision},
     transaction::{
-        Eip1559Transaction, Eip7702Transaction, SignedTransaction, TransactionError,
-        sign_eip1559_transaction, sign_eip7702_transaction,
+        Eip1559Transaction, Eip7702Transaction, TransactionError, sign_eip1559_transaction,
+        sign_eip7702_transaction,
     },
 };
 
@@ -87,6 +87,8 @@ pub enum MultiMintError {
     PendingTransaction(B256),
     #[error("transaction broadcast outcome is uncertain for local hash {0}")]
     BroadcastUncertain(B256),
+    #[error("sponsored batch fee replacement is unavailable")]
+    ReplacementUnavailable,
     #[error("transaction reverted in block {0}")]
     TransactionReverted(u64),
     #[error("sponsored mode requires a verified executor deployment on this RPC chain")]
@@ -1271,7 +1273,7 @@ async fn fetch_actions_hot(
     for attempt in 1..=config.opensea.calldata_max_attempts {
         if stage_window(stage)?
             .ends_at()
-            .is_some_and(|ends_at| unix_timestamp().is_ok_and(|now| now >= ends_at))
+            .is_some_and(|ends_at| unix_timestamp().is_ok_and(|now| now > ends_at))
         {
             return Err(MultiMintError::StageEnded);
         }
@@ -2081,42 +2083,21 @@ async fn run_sponsored(
         return Err(MultiMintError::SponsoredGasBoundExceeded);
     }
 
-    let signed = if authorizations.is_empty() {
-        sign_eip1559_transaction(
-            &Eip1559Transaction {
-                chain_id: chain.chain_id,
-                nonce: launch.sponsor_inputs.pending_nonce,
-                max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
-                max_fee_per_gas: fees.max_fee_per_gas,
-                gas_limit: final_gas_limit,
-                target: sponsored.executor,
-                value: U256::ZERO,
-                calldata,
-            },
-            sponsor,
-        )?
-    } else {
-        sign_eip7702_transaction(
-            &Eip7702Transaction {
-                chain_id: chain.chain_id,
-                nonce: launch.sponsor_inputs.pending_nonce,
-                max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
-                max_fee_per_gas: fees.max_fee_per_gas,
-                gas_limit: final_gas_limit,
-                target: sponsored.executor,
-                value: U256::ZERO,
-                calldata,
-                authorization_list: authorizations,
-            },
-            sponsor,
-        )?
-    };
-    logging::info(format!(
-        "Submitting one sponsored batch for {} wallet(s): {}",
-        operations.len(),
-        signed.hash()
-    ));
-    let receipt = submit_outer(config, gateway, chain, rpc_index, &signed).await?;
+    let receipt = submit_outer_with_replacements(
+        config,
+        gateway,
+        chain,
+        rpc_index,
+        sponsor,
+        chain.chain_id,
+        launch.sponsor_inputs.pending_nonce,
+        final_gas_limit,
+        sponsored.executor,
+        calldata,
+        authorizations,
+        fees,
+    )
+    .await?;
     if !receipt.is_success {
         return Err(MultiMintError::TransactionReverted(receipt.block_number));
     }
@@ -2273,24 +2254,25 @@ async fn undelegate_chunk(
         config.fees,
         refreshed_sponsor.submission_inputs.fee_estimate,
     )?;
-    let transaction = Eip7702Transaction {
-        chain_id: chain.chain_id,
-        nonce: refreshed_sponsor.submission_inputs.pending_nonce,
-        max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
-        max_fee_per_gas: fees.max_fee_per_gas,
-        gas_limit,
-        target: authorities[0].address,
-        value: U256::ZERO,
-        calldata: Bytes::new(),
-        authorization_list: revocations,
-    };
-    let signed = sign_eip7702_transaction(&transaction, sponsor)?;
     logging::info(format!(
-        "Submitting {} EIP-7702 revocation(s): {}",
-        authorities.len(),
-        signed.hash()
+        "Submitting {} EIP-7702 revocation(s).",
+        authorities.len()
     ));
-    let receipt = submit_outer(config, gateway, chain, rpc_index, &signed).await?;
+    let receipt = submit_outer_with_replacements(
+        config,
+        gateway,
+        chain,
+        rpc_index,
+        sponsor,
+        chain.chain_id,
+        refreshed_sponsor.submission_inputs.pending_nonce,
+        gas_limit,
+        authorities[0].address,
+        Bytes::new(),
+        revocations,
+        fees,
+    )
+    .await?;
     if !receipt.is_success {
         logging::warn(
             "Revocation execution reverted; authorization changes are verified independently.",
@@ -2465,28 +2447,97 @@ async fn ensure_sponsor_funding(
     }
 }
 
-async fn submit_outer(
+#[allow(clippy::too_many_arguments)]
+/// Submit the sponsored outer transaction with a fee-bump replacement loop.
+///
+/// The batch is sent at the initial fee; if it stays pending past the
+/// receipt-poll window it is re-signed with the same nonce and bumped fees
+/// (mirroring the self-funded path) so a stuck transaction can be replaced
+/// instead of blocking the sponsor's nonce or mining after the operations'
+/// deadline. The sponsor balance was already verified against
+/// `maximum_transaction_fees`, so every bump is funded.
+async fn submit_outer_with_replacements(
     config: &AppConfig,
     gateway: &ChainGateway,
     chain: &ChainConfig,
     rpc_index: usize,
-    signed: &SignedTransaction,
+    sponsor: &WalletSigner,
+    chain_id: u64,
+    nonce: u64,
+    gas_limit: u64,
+    target: Address,
+    calldata: Bytes,
+    authorizations: Vec<SignedAuthorization>,
+    mut fees: Eip1559Fees,
 ) -> Result<TransactionReceipt, MultiMintError> {
-    let hash = signed.hash();
-    gateway
-        .send_raw_transaction(chain, rpc_index, signed)
-        .await
-        .map_err(|_| MultiMintError::BroadcastUncertain(hash))?;
-    gateway
-        .wait_for_any_transaction_receipt(
-            chain,
-            rpc_index,
-            &[hash],
-            ReceiptPollingPolicy::from(config.retry),
-        )
-        .await?
-        .map(|(_, receipt)| receipt)
-        .ok_or(MultiMintError::PendingTransaction(hash))
+    let replacement_policy = AutomaticFeePolicy::new(10_000, config.fees.replacement_bump_bps)
+        .map_err(|_| MultiMintError::ReplacementUnavailable)?;
+    let mut submitted = Vec::new();
+    for attempt_number in 1..=config.retry.max_attempts {
+        let signed = if authorizations.is_empty() {
+            sign_eip1559_transaction(
+                &Eip1559Transaction {
+                    chain_id,
+                    nonce,
+                    max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+                    max_fee_per_gas: fees.max_fee_per_gas,
+                    gas_limit,
+                    target,
+                    value: U256::ZERO,
+                    calldata: calldata.clone(),
+                },
+                sponsor,
+            )?
+        } else {
+            sign_eip7702_transaction(
+                &Eip7702Transaction {
+                    chain_id,
+                    nonce,
+                    max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+                    max_fee_per_gas: fees.max_fee_per_gas,
+                    gas_limit,
+                    target,
+                    value: U256::ZERO,
+                    calldata: calldata.clone(),
+                    authorization_list: authorizations.clone(),
+                },
+                sponsor,
+            )?
+        };
+        let hash = signed.hash();
+        logging::info(format!(
+            "Submitting sponsored batch: {hash} (attempt {attempt_number})."
+        ));
+        gateway
+            .send_raw_transaction(chain, rpc_index, &signed)
+            .await
+            .map_err(|_| MultiMintError::BroadcastUncertain(hash))?;
+        submitted.push(hash);
+        let receipt = gateway
+            .wait_for_any_transaction_receipt(
+                chain,
+                rpc_index,
+                &submitted,
+                ReceiptPollingPolicy::from(config.retry),
+            )
+            .await?;
+        if let Some((_, receipt)) = receipt {
+            return Ok(receipt);
+        }
+        if attempt_number < config.retry.max_attempts {
+            fees = replacement_policy
+                .replacement(fees)
+                .map_err(|_| MultiMintError::ReplacementUnavailable)?;
+            logging::warn(format!(
+                "Sponsored batch {hash} still pending after attempt {attempt_number}; replacing with bumped fees."
+            ));
+        }
+    }
+    let last = submitted
+        .last()
+        .copied()
+        .ok_or(MultiMintError::Worker)?;
+    Err(MultiMintError::PendingTransaction(last))
 }
 
 struct SponsoredOutcome {

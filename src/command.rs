@@ -2023,7 +2023,7 @@ async fn request_single_wallet_action_hot(
         if context
             .phase
             .ends_at()
-            .is_some_and(|ends_at| unix_timestamp().is_ok_and(|now| now >= ends_at))
+            .is_some_and(|ends_at| unix_timestamp().is_ok_and(|now| now > ends_at))
         {
             return Err(CommandError::StageEnded);
         }
@@ -2287,7 +2287,7 @@ async fn submit_replacements(
         };
         if context
             .phase_ends_at
-            .is_some_and(|end| block_timestamp >= end)
+            .is_some_and(|end| block_timestamp > end)
         {
             if submitted.is_empty() {
                 return Err(CommandError::StageEnded);
