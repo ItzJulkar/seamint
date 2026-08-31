@@ -120,7 +120,7 @@ pub struct FeesConfig {
     pub mode: FeeMode,
     pub replacement_bump_bps: u32,
     /// Optional gas aggressiveness level. When unset, the chain's default is
-    /// used (fast on Robinhood/Ink, slow on Ethereum mainnet, medium elsewhere).
+    /// used (slow on Robinhood/Ethereum mainnet, fast on Ink, medium elsewhere).
     pub gas_fee_level: Option<GasFeeLevel>,
 }
 

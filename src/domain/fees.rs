@@ -14,12 +14,14 @@ pub enum GasFeeLevel {
 }
 
 impl GasFeeLevel {
-    /// Chain-specific default level. Fast on the chains the user races drops
-    /// on (Robinhood, Ink), slow on Ethereum mainnet where gas is expensive,
-    /// medium everywhere else.
+    /// Chain-specific default level. Slow on Robinhood — the user's main
+    /// minting chain, and gas there is ~0.02 gwei so a slow label costs
+    /// nothing — slow on Ethereum mainnet where gas is expensive, fast on
+    /// Ink (drops the user races), medium everywhere else.
     pub fn default_for_chain(chain_id: u64) -> Self {
         match chain_id {
-            4663 | 57073 => GasFeeLevel::Fast,
+            4663 => GasFeeLevel::Slow,
+            57073 => GasFeeLevel::Fast,
             1 => GasFeeLevel::Slow,
             _ => GasFeeLevel::Medium,
         }
@@ -96,4 +98,17 @@ fn multiply_ceil(value: U256, basis_points: u32) -> Result<U256, FeeError> {
         .and_then(|scaled| scaled.checked_add(U256::from(BASIS_POINTS - 1)))
         .ok_or(FeeError::Overflow)?;
     Ok(numerator / U256::from(BASIS_POINTS))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_defaults() {
+        assert_eq!(GasFeeLevel::default_for_chain(4663), GasFeeLevel::Slow); // Robinhood
+        assert_eq!(GasFeeLevel::default_for_chain(57073), GasFeeLevel::Fast); // Ink
+        assert_eq!(GasFeeLevel::default_for_chain(1), GasFeeLevel::Slow); // Ethereum
+        assert_eq!(GasFeeLevel::default_for_chain(8453), GasFeeLevel::Medium); // Base
+    }
 }
