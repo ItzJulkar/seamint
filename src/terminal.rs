@@ -446,6 +446,18 @@ pub fn prompt_gas_fee_level() -> Result<crate::domain::GasFeeLevel, TerminalErro
     }
 }
 
+/// Prompt the user to paste a wallet private key (single-wallet mode).
+///
+/// The value is returned in memory only; it is written to `WALLET_KEY` in the
+/// active `.env` by the caller. Cancelling closes stdin and returns
+/// `TerminalError::Cancelled`.
+pub fn prompt_private_key() -> Result<String, TerminalError> {
+    logging::section_break();
+    logging::info("Paste the wallet private key as 0x followed by 64 hex characters.");
+    logging::input("It will be written to WALLET_KEY in the active .env.");
+    prompt("Private key> ")
+}
+
 /// A supported network with its canonical public RPC endpoint. The `rpc_url`
 /// is what gets written to `RPC_URL` in `.env`; `chain_id` is shown to the
 /// user so they can match it against what `seamint doctor` reports.
@@ -503,7 +515,10 @@ pub fn prompt_chain_rpc() -> Result<&'static ChainSelection, TerminalError> {
         {
             return Ok(chain);
         }
-        logging::warn(format!("Enter a number from 1 to {}.", SUPPORTED_CHAINS.len()));
+        logging::warn(format!(
+            "Enter a number from 1 to {}.",
+            SUPPORTED_CHAINS.len()
+        ));
     }
 }
 
@@ -539,9 +554,17 @@ mod tests {
         // Every preset RPC must be https and each chain_id distinct.
         let mut ids = std::collections::HashSet::new();
         for chain in SUPPORTED_CHAINS {
-            assert!(chain.rpc_url.starts_with("https://"), "{} must be https", chain.name);
+            assert!(
+                chain.rpc_url.starts_with("https://"),
+                "{} must be https",
+                chain.name
+            );
             assert!(chain.rpc_url.contains("://"), "{} has a host", chain.name);
-            assert!(ids.insert(chain.chain_id), "duplicate chain_id {}", chain.chain_id);
+            assert!(
+                ids.insert(chain.chain_id),
+                "duplicate chain_id {}",
+                chain.chain_id
+            );
         }
     }
 

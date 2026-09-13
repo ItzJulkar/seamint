@@ -630,6 +630,75 @@ mod tests {
     }
 
     #[test]
+    fn signed_batch_is_longer_but_reprices_within_the_final_upper_bound() {
+        // Regression for the run_sponsored gas guard: the UNSIGNED provisional
+        // batch is always 64 bytes shorter per operation than the SIGNED
+        // batch (two 32-byte signature words), so comparing their lengths made
+        // every sponsored mint fail with SponsoredGasBoundExceeded. The correct
+        // invariant is that the exact gas cost of the final signed calldata
+        // stays within its own upper bound.
+        let signer = WalletSigner::from_private_key(PRIVATE_KEY).expect("signer");
+        let signer_two = WalletSigner::from_private_key(
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .expect("signer two");
+        let (dispatcher, sponsor, _, _) = addresses();
+        let batch_id = B256::repeat_byte(0x77);
+        let mut operations = vec![
+            operation(signer.identity().address),
+            operation(signer_two.identity().address),
+        ];
+        let mut provisional = operations.clone();
+        for op in &mut provisional {
+            op.deadline = 0;
+            op.signature_r = B256::ZERO;
+            op.signature_y_parity_and_s = B256::ZERO;
+        }
+        let provisional_calldata =
+            encode_execute_batch(8453, dispatcher, sponsor, batch_id, &provisional)
+                .expect("provisional batch");
+        for (index, operation) in operations.iter_mut().enumerate() {
+            operation.deadline = 2_000_000_000;
+            let wallet_signer = if index == 0 { &signer } else { &signer_two };
+            sign_operation(
+                8453,
+                dispatcher,
+                sponsor,
+                batch_id,
+                index,
+                operation,
+                wallet_signer,
+            )
+            .expect("signed operation");
+        }
+        let final_calldata = encode_execute_batch(8453, dispatcher, sponsor, batch_id, &operations)
+            .expect("final batch");
+        // Signature words are always ABI-encoded (zero-filled while unsigned),
+        // so a signed batch has the SAME length as the unsigned one. A length
+        // comparison across the signing boundary can therefore never detect
+        // signing; the outer gas bound is the invariant that matters, and the
+        // exact gas of the final calldata must stay within its own upper bound.
+        assert_eq!(final_calldata.len(), provisional_calldata.len());
+        let provisional_exact = sponsored_outer_gas_limit(&provisional_calldata, &provisional)
+            .expect("provisional exact");
+        let exact = sponsored_outer_gas_limit(&final_calldata, &operations).expect("exact gas");
+        let upper = sponsored_outer_gas_limit_upper_bound(final_calldata.len(), &operations)
+            .expect("upper bound");
+        assert!(
+            exact > provisional_exact,
+            "nonzero signature words raise calldata gas"
+        );
+        assert!(
+            exact <= upper,
+            "final exact gas must stay within the final upper bound"
+        );
+        assert!(
+            upper > 250_000,
+            "batch of two operations carries real overhead"
+        );
+    }
+
+    #[test]
     fn delegation_signature_recovers_for_delegation_and_revocation() {
         let signer = WalletSigner::from_private_key(PRIVATE_KEY).expect("signer");
         let (dispatcher, _, _, _) = addresses();

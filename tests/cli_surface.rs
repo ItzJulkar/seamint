@@ -16,6 +16,7 @@ fn help_exposes_doctor_deployment_mint_calldata_and_wallet_generation() {
         .stdout(predicate::str::contains("mint"))
         .stdout(predicate::str::contains("calldata"))
         .stdout(predicate::str::contains("wallets"))
+        .stdout(predicate::str::contains("wallet"))
         .stdout(predicate::str::contains("protocol-probe").not())
         .stdout(predicate::str::contains("--config").not())
         .stdout(predicate::str::contains("jobs").not());

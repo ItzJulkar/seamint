@@ -46,6 +46,10 @@ seamint wallets create --count N --quantity Q --output FILE
 seamint eth mainnet gas-fee   Set Ethereum mainnet gas fee level (1=slow, 2=medium, 3=fast)
 seamint chain rpc             Show the current RPC chain and select a network
                               (1 = Ink, 2 = Robinhood, 3 = Ethereum); writes RPC_URL to .env
+seamint wallet show           Show which wallet is configured for minting (derived address,
+                              mode, RPC) without changing anything
+seamint wallet set [--key HEX] Set the single-wallet signing key (WALLET_KEY in .env);
+                              validates the key, shows the derived address, asks for confirmation
 ```
 
 `seamint doctor` is the first thing you run after configuring — it checks the
@@ -144,6 +148,23 @@ Keep-own (`on`) is only available in self-funded mode: the sponsored EIP-7702
 executor always forwards the NFT to the recipient, so sponsored minting
 requires `RECIPIENT_FORWARD=true`. In keep-own mode `RECIPIENT_ADDRESS` is still
 used as the withdrawal destination for `mint --withdraw`.
+
+## Wallet management
+
+`seamint wallet` does not touch the RPC or OpenSea — it only reads and writes the
+local `.env`, so it works even before the rest of the configuration is complete.
+
+- `seamint wallet show` — prints the signing address derived from `WALLET_KEY`
+  (or, in multi-wallet mode, the manifest path, mode, wallet count, and first
+  address). Private keys are never printed; run `seamint doctor` afterwards to
+  verify the RPC chain the wallet will actually mint against.
+- `seamint wallet set` — paste a private key (or pass it directly with
+  `--key 0x…`) to set `WALLET_KEY`. The key is validated by deriving its address
+  before anything is written, and the write requires a `y` confirmation.
+  It refuses to run while `WALLETS_FILE` is configured without `SPONSORED=true`,
+  because that combination would break config loading.
+
+Both commands write `.env` in place, preserving every other line and comment.
 
 ## Executor
 

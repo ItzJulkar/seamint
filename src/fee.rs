@@ -38,25 +38,31 @@ pub(crate) fn resolve_initial_fees(
                 .gas_fee_level
                 .unwrap_or_else(|| GasFeeLevel::default_for_chain(state.chain_id));
 
-            if state.chain_id == ETHEREUM_MAINNET_CHAIN_ID {
-                if let Some(oracle) = state.eth_oracle {
-                    // Etherscan tiers are total gas prices (base + tip), so the
-                    // priority fee is the tier minus the current base fee.
-                    let max_fee_per_gas = gwei_f64_to_wei(oracle.tier(level));
-                    // FeeEstimate.max_fee = 2×base + tip (see chain.rs), so the
-                    // live base fee is (max_fee − tip) / 2.
-                    let base_fee = estimate
-                        .max_fee_per_gas
-                        .saturating_sub(estimate.max_priority_fee_per_gas)
-                        / alloy_primitives::U256::from(2);
-                    let max_priority_fee_per_gas = max_fee_per_gas
-                        .saturating_sub(base_fee)
-                        .max(alloy_primitives::U256::from(1));
-                    return Ok(Eip1559Fees {
-                        max_fee_per_gas,
-                        max_priority_fee_per_gas,
-                    });
-                }
+            if state.chain_id == ETHEREUM_MAINNET_CHAIN_ID
+                && let Some(oracle) = state.eth_oracle
+            {
+                // Etherscan tiers are total gas prices (base + tip). The
+                // wallet's tip is the RPC's own recommended tip; the cap is
+                // the higher of the selected tier and the live base fee +
+                // tip, so a spiking base fee can never push the cap below
+                // what the next block requires (which would make the
+                // transaction unminable until the base drops again).
+                let tier = gwei_f64_to_wei(oracle.tier(level));
+                // FeeEstimate.max_fee = 2×base + tip (see chain.rs), so the
+                // live base fee is (max_fee − tip) / 2.
+                let base_fee = estimate
+                    .max_fee_per_gas
+                    .saturating_sub(estimate.max_priority_fee_per_gas)
+                    / alloy_primitives::U256::from(2);
+                let minimum_cap = base_fee + estimate.max_priority_fee_per_gas;
+                let max_fee_per_gas = tier.max(minimum_cap);
+                let max_priority_fee_per_gas = estimate
+                    .max_priority_fee_per_gas
+                    .max(alloy_primitives::U256::from(1));
+                return Ok(Eip1559Fees {
+                    max_fee_per_gas,
+                    max_priority_fee_per_gas,
+                });
             }
 
             // Fallback (oracle unavailable, or non-ETH chain): the RPC's real
@@ -91,8 +97,8 @@ pub(crate) fn maximum_transaction_fees(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::U256;
     use crate::gas_oracle::EthGasOracle;
+    use alloy_primitives::U256;
 
     fn automatic_config() -> FeesConfig {
         FeesConfig {
@@ -120,7 +126,10 @@ mod tests {
         };
         let fees = resolve_initial_fees(config, rh_state(), estimate).expect("fees");
         assert_eq!(fees.max_fee_per_gas, estimate.max_fee_per_gas);
-        assert_eq!(fees.max_priority_fee_per_gas, estimate.max_priority_fee_per_gas);
+        assert_eq!(
+            fees.max_priority_fee_per_gas,
+            estimate.max_priority_fee_per_gas
+        );
     }
 
     #[test]
@@ -141,10 +150,40 @@ mod tests {
         // Default for Ethereum is slow → Etherscan SafeGasPrice 0.153 gwei.
         let fees = resolve_initial_fees(config, state, estimate).expect("fees");
         assert_eq!(fees.max_fee_per_gas, U256::from(153_000_000));
-        // priority = tier − base, where base = (max_fee − tip)/2 = (162M−1M)/2 =
-        // 80.5M → 153M − 80.5M = 72.5M wei (NOT clamped to 1).
-        assert_eq!(fees.max_priority_fee_per_gas, U256::from(72_500_000));
+        // The tip is the RPC's own recommended tip (1M wei), never derived
+        // from (tier − base); the cap stays at the selected Etherscan tier
+        // because the tier already covers base + tip.
+        assert_eq!(fees.max_priority_fee_per_gas, U256::from(1_000_000));
         assert_eq!(fees.max_fee_per_gas, U256::from(153_000_000));
+    }
+
+    #[test]
+    fn ethereum_cap_never_falls_below_live_base_fee_plus_tip_during_a_spike() {
+        // Regression: when the live base fee exceeds the stale Etherscan tier
+        // (common at a popular drop), the cap used to stay at the tier, making
+        // the transaction unminable (max_fee < base + tip). The cap must be
+        // floored at base + tip.
+        let config = automatic_config();
+        let state = GasFeeState {
+            chain_id: 1,
+            eth_oracle: Some(EthGasOracle {
+                safe_gas_price_gwei: 0.153, // slow tier is stale/low
+                propose_gas_price_gwei: 0.154,
+                fast_gas_price_gwei: 0.253,
+            }),
+        };
+        let estimate = FeeEstimate {
+            max_fee_per_gas: U256::from(400_000_000), // base = (400M − 1M)/2 ≈ 199.5M > tier
+            max_priority_fee_per_gas: U256::from(1_000_000),
+        };
+        let fees = resolve_initial_fees(config, state, estimate).expect("fees");
+        // base + tip = 199.5M + 1M = 200.5M, which exceeds the 153M tier.
+        assert_eq!(fees.max_fee_per_gas, U256::from(200_500_000));
+        assert_eq!(fees.max_priority_fee_per_gas, U256::from(1_000_000));
+        // The transaction must be includable: cap >= base + tip.
+        let base_fee = (estimate.max_fee_per_gas - estimate.max_priority_fee_per_gas)
+            / alloy_primitives::U256::from(2);
+        assert!(fees.max_fee_per_gas >= base_fee + fees.max_priority_fee_per_gas);
     }
 
     #[test]

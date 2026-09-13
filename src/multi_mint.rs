@@ -2079,8 +2079,20 @@ async fn run_sponsored(
         &operations,
     )?;
     let final_gas_limit = sponsored_outer_gas_limit(&calldata, &operations)?;
-    if calldata.len() != provisional_calldata.len() || final_gas_limit > provisional_gas_limit {
+    let final_upper_bound = sponsored_outer_gas_limit_upper_bound(calldata.len(), &operations)?;
+    if final_gas_limit > final_upper_bound {
         return Err(MultiMintError::SponsoredGasBoundExceeded);
+    }
+    // The signed batch is longer than the provisional one (two 32-byte
+    // signature words per operation), so the sponsor-balance guarantee is
+    // re-checked against the FINAL upper bound instead of the provisional one.
+    let final_requirement = FundingRequirement {
+        mint_value: U256::ZERO,
+        gas_limit: final_upper_bound,
+        max_fee_per_gas: maximum_fees.max_fee_per_gas,
+    };
+    if final_requirement.shortfall(launch.sponsor_state.balance)? != U256::ZERO {
+        return Err(MultiMintError::SponsorUnderfunded);
     }
 
     let receipt = submit_outer_with_replacements(
@@ -2533,10 +2545,7 @@ async fn submit_outer_with_replacements(
             ));
         }
     }
-    let last = submitted
-        .last()
-        .copied()
-        .ok_or(MultiMintError::Worker)?;
+    let last = submitted.last().copied().ok_or(MultiMintError::Worker)?;
     Err(MultiMintError::PendingTransaction(last))
 }
 

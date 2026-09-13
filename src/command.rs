@@ -98,6 +98,11 @@ pub enum Command {
         #[arg(long, default_value = "0")]
         token_id: String,
     },
+    /// Show or set the wallet used for single-wallet minting.
+    Wallet {
+        #[command(subcommand)]
+        command: ConfiguredWalletCommand,
+    },
     /// Create a strict JSON manifest containing new cryptographically random wallets.
     Wallets {
         #[command(subcommand)]
@@ -139,6 +144,18 @@ pub enum EthCommand {
 pub enum MainnetCommand {
     /// Set the Ethereum mainnet gas fee level (1=slow, 2=medium, 3=fast).
     GasFee,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfiguredWalletCommand {
+    /// Show which wallet is configured for minting (address, mode, source) without changing anything.
+    Show,
+    /// Set the single-wallet signing key (`WALLET_KEY` in `.env`).
+    Set {
+        /// Provide the private key directly instead of pasting it at a prompt.
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -244,6 +261,12 @@ pub enum CommandError {
     #[error("invalid recipient address: {0}")]
     InvalidRecipientAddress(String),
     #[error(
+        "cannot set WALLET_KEY while WALLETS_FILE is configured; remove or comment WALLETS_FILE (or set SPONSORED=true to keep multi-wallet mode)"
+    )]
+    WalletKeyConflictsWithManifest,
+    #[error("could not read wallet manifest {path}: {reason}")]
+    InvalidWalletManifest { path: String, reason: String },
+    #[error(
         "more than one mint stage is active, so OpenSea's action cannot be bound to the selection"
     )]
     AmbiguousActiveStage,
@@ -315,17 +338,25 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
         Command::Wallets { command } => return create_wallets(command),
         Command::DeployExecutor => return deploy_executor().await,
         Command::Eth {
-            command: EthCommand::Mainnet {
-                command: MainnetCommand::GasFee,
-            },
+            command:
+                EthCommand::Mainnet {
+                    command: MainnetCommand::GasFee,
+                },
         } => return set_eth_mainnet_gas_fee().await,
         Command::Chain {
             command: ChainCommand::Rpc,
         } => return set_chain_rpc(),
+        Command::Wallet {
+            command: ConfiguredWalletCommand::Show,
+        } => return wallet_show(),
+        Command::Wallet {
+            command: ConfiguredWalletCommand::Set { key },
+        } => return wallet_set(key),
         Command::Multi {
-            command: MultiCommand::Wallet {
-                command: WalletRecipientCommand::Recipient { command },
-            },
+            command:
+                MultiCommand::Wallet {
+                    command: WalletRecipientCommand::Recipient { command },
+                },
         } => return configure_recipient(command),
         command => command,
     };
@@ -380,6 +411,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
             Command::Wallets { .. } | Command::DeployExecutor => {
                 unreachable!("handled before configuration loading")
             }
+            Command::Wallet { .. } => unreachable!("handled before configuration loading"),
             Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
             Command::Multi { .. } => unreachable!("handled before configuration loading"),
             Command::Eth { .. } => unreachable!("handled before configuration loading"),
@@ -415,6 +447,7 @@ pub async fn execute(cli: Cli) -> Result<(), CommandError> {
         Command::Wallets { .. } | Command::DeployExecutor => {
             unreachable!("handled before configuration loading")
         }
+        Command::Wallet { .. } => unreachable!("handled before configuration loading"),
         Command::Calldata { .. } => unreachable!("handled before wallet mode routing"),
         Command::Multi { .. } => unreachable!("handled before configuration loading"),
         Command::Eth { .. } => unreachable!("handled before configuration loading"),
@@ -453,7 +486,9 @@ async fn set_eth_mainnet_gas_fee() -> Result<(), CommandError> {
         level.label(),
         path.display()
     ));
-    logging::info("On Ethereum mainnet this maps to the real Etherscan gas-tracker value for that tier.");
+    logging::info(
+        "On Ethereum mainnet this maps to the real Etherscan gas-tracker value for that tier.",
+    );
     Ok(())
 }
 
@@ -572,7 +607,9 @@ fn configure_recipient(command: RecipientCommand) -> Result<(), CommandError> {
                 None => logging::info("RECIPIENT_ADDRESS: not set"),
             }
             if !has_wallets {
-                logging::warn("WALLETS_FILE is not set; recipient settings only apply to multi-wallet minting.");
+                logging::warn(
+                    "WALLETS_FILE is not set; recipient settings only apply to multi-wallet minting.",
+                );
             }
             Ok(())
         }
@@ -588,7 +625,10 @@ fn configure_recipient(command: RecipientCommand) -> Result<(), CommandError> {
                 write_recipient_address(&path, &address)?;
             }
             logging::success("Recipient mode ON: each minting wallet keeps its own NFT.");
-            logging::info(format!("RECIPIENT_FORWARD=false written to {}.", path.display()));
+            logging::info(format!(
+                "RECIPIENT_FORWARD=false written to {}.",
+                path.display()
+            ));
             Ok(())
         }
         RecipientCommand::Off { recipient } => {
@@ -604,11 +644,176 @@ fn configure_recipient(command: RecipientCommand) -> Result<(), CommandError> {
                     "RECIPIENT_ADDRESS is not set; minting will fail until you set it (use --recipient <address>).",
                 );
             }
-            logging::success("Recipient mode OFF: every NFT will be forwarded to RECIPIENT_ADDRESS.");
-            logging::info(format!("RECIPIENT_FORWARD=true written to {}.", path.display()));
+            logging::success(
+                "Recipient mode OFF: every NFT will be forwarded to RECIPIENT_ADDRESS.",
+            );
+            logging::info(format!(
+                "RECIPIENT_FORWARD=true written to {}.",
+                path.display()
+            ));
             Ok(())
         }
     }
+}
+
+/// Show which wallet is configured for minting without changing anything.
+///
+/// This is a pure local read: it never contacts an `RPC` or `OpenSea`, so it works
+/// even when `.env` is incomplete. Multi-wallet manifests are only skimmed
+/// (count + first address) — private keys are never printed.
+fn wallet_show() -> Result<(), CommandError> {
+    let path = crate::config::environment_path()?;
+    logging::section_break();
+    logging::info(format!("Configuration: {}", path.display()));
+    let key = read_env_setting(&path, "WALLET_KEY");
+    let manifest = read_env_setting(&path, "WALLETS_FILE");
+    let sponsored = read_env_setting(&path, "SPONSORED")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    match (key.as_deref(), manifest.as_deref()) {
+        (Some(key_value), None) if !key_value.trim().is_empty() => {
+            let signer = WalletSigner::from_private_key(key_value.trim())?;
+            logging::success(format!("Mint wallet:   {}", signer.identity().address));
+            logging::info("Mode:          single-wallet (WALLET_KEY)");
+        }
+        (Some(_), None) => {
+            logging::warn("WALLET_KEY is set but empty; config loading will reject it.");
+        }
+        (None, Some(manifest_value)) => {
+            // The config loader treats ANY present WALLETS_FILE as set, so an
+            // empty value still selects multi-wallet mode (and fails to load).
+            if manifest_value.trim().is_empty() {
+                logging::warn("WALLETS_FILE is set but empty; config loading will reject it.");
+            } else {
+                let mode = if sponsored {
+                    "sponsored"
+                } else {
+                    "self-funded"
+                };
+                logging::info(format!(
+                    "Mint wallets:  {} manifest (mode: {mode})",
+                    manifest_value.trim()
+                ));
+                show_manifest_summary(&path, manifest_value.trim())?;
+            }
+        }
+        (Some(key_value), Some(manifest_value)) => {
+            // Both present → loading fails unless SPONSORED=true, exactly like
+            // the config loader's select_wallet_source.
+            logging::warn("Both WALLET_KEY and WALLETS_FILE are set.");
+            if sponsored {
+                logging::info(format!(
+                    "Effective:     multi-wallet (SPONSORED=true picks WALLETS_FILE = {})",
+                    manifest_value.trim()
+                ));
+                if manifest_value.trim().is_empty() {
+                    logging::warn("WALLETS_FILE is set but empty; config loading will reject it.");
+                } else {
+                    show_manifest_summary(&path, manifest_value.trim())?;
+                }
+            } else if !key_value.trim().is_empty() {
+                logging::info(
+                    "Effective:     WALLET_KEY (config load will reject the two-source conflict)",
+                );
+                let signer = WalletSigner::from_private_key(key_value.trim())?;
+                logging::info(format!("Wallet key signs: {}", signer.identity().address));
+            } else {
+                logging::warn("WALLET_KEY is set but empty.");
+            }
+        }
+        (None, None) => {
+            logging::warn("No wallet is configured: neither WALLET_KEY nor WALLETS_FILE is set.");
+            logging::info("Use `seamint wallet set` to configure a single-wallet key.");
+        }
+    }
+    match read_env_setting(&path, "RPC_URL").as_deref() {
+        Some(url) if !url.trim().is_empty() => {
+            logging::info(format!("RPC_URL:       {}", url.trim()));
+        }
+        _ => logging::warn("RPC_URL is not set."),
+    }
+    logging::info("Run `seamint doctor` to verify the RPC chain is reachable from this wallet.");
+    Ok(())
+}
+
+/// Print the wallet count and first derived address of a multi-wallet manifest.
+/// Never prints private keys.
+fn show_manifest_summary(
+    path: &std::path::Path,
+    manifest_setting: &str,
+) -> Result<(), CommandError> {
+    let configured = PathBuf::from(manifest_setting);
+    let manifest_path = if configured.is_absolute() {
+        configured
+    } else {
+        path.parent().unwrap_or(path).join(manifest_setting)
+    };
+    let contents = std::fs::read_to_string(&manifest_path).map_err(|source| {
+        CommandError::InvalidWalletManifest {
+            path: manifest_path.display().to_string(),
+            reason: source.to_string(),
+        }
+    })?;
+    let manifest: MiniManifest =
+        serde_json::from_str(&contents).map_err(|source| CommandError::InvalidWalletManifest {
+            path: manifest_path.display().to_string(),
+            reason: source.to_string(),
+        })?;
+    logging::info(format!("Wallet count:  {}", manifest.wallets.len()));
+    if let Some(first) = manifest.wallets.first()
+        && let Ok(signer) = WalletSigner::from_private_key(&first.private_key)
+    {
+        logging::info(format!("First wallet:  {}", signer.identity().address));
+    }
+    Ok(())
+}
+
+/// Set the single-wallet signing key (`WALLET_KEY` in `.env`). The key is
+/// validated by deriving its address before anything is written, and the write
+/// is confirmed by the user. Refuses to run while `WALLETS_FILE` is active
+/// without `SPONSORED=true`, because that combination makes config load fail.
+fn wallet_set(key_arg: Option<String>) -> Result<(), CommandError> {
+    let path = crate::config::environment_path()?;
+    // The config loader treats ANY present WALLETS_FILE (even an empty value)
+    // as multi-wallet mode, so setting WALLET_KEY on top would make loading
+    // fail; refuse unless SPONSORED=true explicitly selects the manifest.
+    if read_env_setting(&path, "WALLETS_FILE").is_some() {
+        let sponsored = read_env_setting(&path, "SPONSORED")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if !sponsored {
+            return Err(CommandError::WalletKeyConflictsWithManifest);
+        }
+    }
+    let key = match key_arg {
+        Some(key) => key,
+        None => terminal::prompt_private_key()?,
+    };
+    let trimmed = key.trim();
+    let signer = WalletSigner::from_private_key(trimmed)?;
+    let address = signer.identity().address;
+    terminal::confirm_native_funds(
+        format!("Set WALLET_KEY to the wallet at {address}? This key signs and pays for mints.")
+            .as_str(),
+    )?;
+    upsert_env_setting(&path, "WALLET_KEY", trimmed)?;
+    logging::success(format!(
+        "WALLET_KEY set to address {address} in {}.",
+        path.display()
+    ));
+    logging::info("Run `seamint doctor` to verify, then `seamint wallet show` to confirm.");
+    Ok(())
+}
+
+/// Minimal view of a wallet manifest used only by `wallet show`; it deliberately
+/// does not validate the full structure (that happens when the manifest is
+/// actually loaded for minting).
+#[derive(serde::Deserialize)]
+struct MiniManifest {
+    wallets: Vec<MiniManifestWallet>,
+}
+
+#[derive(serde::Deserialize)]
+struct MiniManifestWallet {
+    private_key: String,
 }
 
 struct ExecutorDeploymentPlan {
